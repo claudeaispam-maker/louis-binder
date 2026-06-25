@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Loui's Binder</title>
+
+<!-- Firebase SDK (CDN, compat build for simplicity in a single file) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+
+<style>
+  :root{
+    --leather: #6b3a2a;
+    --leather-dark: #4a2719;
+    --gold: #d4af37;
+    --page: #f4ecd8;
+    --page-edge: #d8c9a3;
+    --pocket: rgba(255,255,255,0.35);
+    --pocket-border: rgba(255,255,255,0.6);
+    --owned: #3a9d4f;
+    --missing: #a3a3a3;
+  }
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: radial-gradient(ellipse at center, #2b2b2b 0%, #111 100%);
+    overflow:hidden;
+    color:#222;
+    -webkit-tap-highlight-color: transparent;
+    user-select:none;
+  }
+
+  /* ---------------- COVER ---------------- */
+  #coverStage{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    perspective: 2000px; z-index: 50;
+  }
+  #cover{
+    width:min(86vw, 480px); height:min(70vh, 640px);
+    background:
+      radial-gradient(circle at 30% 18%, #fff6b0 0%, #ffd23f 14%, #ff9a1f 34%, #ff5b1f 56%, #e8290c 76%, #a8120a 100%);
+    border-radius: 14px;
+    box-shadow: 0 30px 60px rgba(0,0,0,0.65), inset 0 0 50px rgba(0,0,0,0.35);
+    display:flex; align-items:center; justify-content:center; flex-direction:column;
+    cursor:pointer;
+    transform-origin: left center;
+    transform-style: preserve-3d;
+    transition: transform 1.1s cubic-bezier(.6,0,.4,1);
+    border: 10px solid #111;
+    position:relative;
+    overflow:hidden;
+  }
+  /* zipper piping around the edge, like a zip-up card binder */
+  #cover::before{
+    content:'';
+    position:absolute; inset:8px;
+    border: 3px solid rgba(0,0,0,0.55);
+    border-radius:8px;
+    pointer-events:none;
+    background-image: repeating-linear-gradient(135deg, transparent 0 6px, rgba(0,0,0,0.18) 6px 7px);
+  }
+  /* flame silhouettes / glow layers to echo the Charizard-line art */
+  #cover::after{
+    content:'';
+    position:absolute; inset:0;
+    background:
+      radial-gradient(ellipse 70% 45% at 75% 85%, rgba(40,10,5,0.55) 0%, transparent 60%),
+      radial-gradient(ellipse 60% 40% at 15% 90%, rgba(40,10,5,0.5) 0%, transparent 55%),
+      radial-gradient(ellipse 50% 60% at 85% 10%, rgba(255,255,255,0.25) 0%, transparent 50%);
+    pointer-events:none;
+  }
+  #cover.opened{
+    transform: rotateY(-150deg);
+    box-shadow: 0 30px 60px rgba(0,0,0,0.2);
+  }
+  #cover h1{
+    color: #fff;
+    font-family: 'Georgia', serif;
+    font-weight: 900;
+    font-size: clamp(28px,6vw,42px);
+    text-align:center;
+    text-shadow: 0 2px 0 #7a1505, 0 4px 10px rgba(0,0,0,0.7), 0 0 24px rgba(255,150,0,0.6);
+    -webkit-text-stroke: 1.5px #5c1004;
+    margin:0 0 10px 0;
+    letter-spacing:1px;
+    position:relative; z-index:2;
+  }
+  #cover .firemark{
+    width:84px; height:84px;
+    margin-bottom: 16px;
+    position:relative; z-index:2;
+    filter: drop-shadow(0 6px 10px rgba(0,0,0,0.5));
+  }
+  #cover .tap-prompt{
+    color: rgba(255,255,255,0.9);
+    font-size: 14px;
+    margin-top: 14px;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    position:relative; z-index:2;
+    animation: pulse 2s infinite ease-in-out;
+  }
+  @keyframes pulse{ 0%,100%{opacity:0.5;} 50%{opacity:1;} }
+
+  #coverStage.hide{ display:none; }
+
+  /* ---------------- BINDER APP ---------------- */
+  #app{
+    position:fixed; inset:0; display:none;
+    flex-direction:column; align-items:center; justify-content:center;
+    opacity:0; transition: opacity .6s ease;
+  }
+  #app.visible{ display:flex; opacity:1; }
+
+  #topBar{
+    position:absolute; top:0; left:0; right:0;
+    display:flex; align-items:center; justify-content:space-between;
+    padding: 10px 16px;
+    color:#eee; font-size:13px;
+    z-index: 30;
+  }
+  #topBar .summary{
+    background: rgba(0,0,0,0.4);
+    padding: 6px 12px; border-radius: 20px;
+    display:flex; gap:10px; align-items:center;
+  }
+  #topBar .dot{ width:8px; height:8px; border-radius:50%; display:inline-block; margin-right:4px;}
+  #topBar .dot.owned{ background:var(--owned); }
+  #topBar .dot.missing{ background:var(--missing); }
+  #settingsBtn{
+    background: rgba(0,0,0,0.4); border:none; color:#eee; border-radius:20px;
+    padding:6px 12px; cursor:pointer; font-size:13px;
+  }
+  #settingsBtn:hover{ background: rgba(0,0,0,0.6); }
+
+  #binderWrap{
+    perspective: 2400px;
+    width: min(94vw, 920px);
+    height: min(80vh, 600px);
+    position:relative;
+  }
+  #binder{
+    width:100%; height:100%;
+    background: linear-gradient(135deg, var(--leather) 0%, var(--leather-dark) 100%);
+    border-radius: 8px;
+    box-shadow: 0 30px 70px rgba(0,0,0,0.6);
+    position:relative;
+    display:flex;
+    padding: 14px;
+    gap: 4px;
+  }
+
+  .pageSlotHolder{
+    position:relative;
+    flex:1;
+    background: var(--page);
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px var(--page-edge);
+    overflow:hidden;
+  }
+  .pageFace{
+    position:absolute; inset:0;
+    backface-visibility: hidden;
+    display:flex; flex-direction:column;
+    transform-origin: left center;
+    transition: transform .85s cubic-bezier(.6,.02,.3,1);
+  }
+  .pageFace.right{ transform-origin: left center; }
+  .pageFace.left{ transform-origin: right center; }
+
+  .pageHeader{
+    text-align:center; font-family:Georgia, serif; color: var(--leather-dark);
+    font-size:13px; padding:8px 0 2px 0; opacity:0.7; flex-shrink:0;
+  }
+  .grid3x3{
+    flex:1;
+    display:grid;
+    grid-template-columns: repeat(3,1fr);
+    grid-template-rows: repeat(3,1fr);
+    gap: 8px;
+    padding: 10px;
+  }
+  .pocket{
+    background: var(--pocket);
+    border: 2px dashed var(--pocket-border);
+    border-radius: 6px;
+    position:relative;
+    display:flex; align-items:center; justify-content:center;
+    cursor:pointer;
+    overflow:hidden;
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .pocket:hover{ transform: scale(1.03); box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
+  .pocket.filled{ border-style: solid; background: rgba(255,255,255,0.55); }
+  .pocket .plus{
+    font-size: 26px; color: rgba(80,60,40,0.35); font-weight:300;
+  }
+  .pocket img{
+    width:100%; height:100%; object-fit:contain; padding:3px;
+    filter: none;
+    transition: filter .3s ease;
+  }
+  .pocket.missing img{
+    filter: grayscale(0.9) brightness(0.75) contrast(0.85);
+    opacity: 0.65;
+  }
+  .pocket .qtyBadge{
+    position:absolute; bottom:3px; right:3px;
+    background: rgba(0,0,0,0.6); color:#fff; font-size:10px;
+    padding:1px 5px; border-radius:8px;
+  }
+  .pocket .ownedDot{
+    position:absolute; top:4px; left:4px; width:10px; height:10px; border-radius:50%;
+    box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8);
+  }
+  .pocket .ownedDot.owned{ background: var(--owned); }
+  .pocket .ownedDot.missing{ background: var(--missing); }
+
+  /* page edge stack illusion */
+  .edgeStack{
+    position:absolute; top:6px; bottom:6px; width:8px;
+    background: repeating-linear-gradient(to bottom, var(--page-edge) 0px, var(--page-edge) 2px, transparent 2px, transparent 4px);
+    opacity:0.6;
+  }
+  .edgeStack.leftEdge{ left:-2px; }
+  .edgeStack.rightEdge{ right:-2px; }
+
+  /* Nav arrows */
+  .navArrow{
+    position:absolute; top:50%; transform: translateY(-50%);
+    width:46px; height:46px; border-radius:50%;
+    background: rgba(0,0,0,0.45); color:#fff; border:none;
+    font-size:20px; cursor:pointer; z-index:25;
+    display:flex; align-items:center; justify-content:center;
+    transition: background .2s ease, opacity .2s ease;
+  }
+  .navArrow:hover{ background: rgba(0,0,0,0.7); }
+  .navArrow:disabled{ opacity:0.25; cursor:default; }
+  #prevBtn{ left:-58px; }
+  #nextBtn{ right:-58px; }
+  @media (max-width: 760px){
+    #prevBtn{ left:4px; }
+    #nextBtn{ right:4px; }
+  }
+
+  #pageCounter{
+    position:absolute; bottom:-32px; left:50%; transform:translateX(-50%);
+    color:#ddd; font-size:13px; letter-spacing:0.5px;
+  }
+
+  /* ---------------- SEARCH PANEL ---------------- */
+  #overlay{
+    position:fixed; inset:0; background: rgba(0,0,0,0.55);
+    display:none; align-items:center; justify-content:center; z-index:100;
+  }
+  #overlay.visible{ display:flex; }
+  .panel{
+    background:#fff; width:min(92vw,520px); max-height:84vh; overflow-y:auto;
+    border-radius:12px; padding:20px; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+  }
+  .panel h2{ margin:0 0 12px 0; font-family:Georgia,serif; color:var(--leather-dark); }
+  .panel input[type=text]{
+    width:100%; padding:10px 12px; border:1px solid #ccc; border-radius:8px; font-size:14px;
+    margin-bottom:8px;
+  }
+  .panel button.primary{
+    background: var(--leather); color:#fff; border:none; padding:10px 16px;
+    border-radius:8px; cursor:pointer; font-size:14px; margin-right:6px;
+  }
+  .panel button.primary:hover{ background: var(--leather-dark); }
+  .panel button.secondary{
+    background:#eee; color:#333; border:none; padding:10px 16px;
+    border-radius:8px; cursor:pointer; font-size:14px;
+  }
+  .panel button.secondary:hover{ background:#ddd; }
+  .panel .closeRow{ display:flex; justify-content:flex-end; margin-top:14px; }
+
+  #resultsGrid{
+    display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; margin-top:10px;
+  }
+  .resultCard{
+    border:1px solid #ddd; border-radius:8px; padding:6px; text-align:center; cursor:pointer;
+    transition: box-shadow .15s ease, transform .15s ease;
+    font-size:11px;
+  }
+  .resultCard:hover{ box-shadow:0 4px 10px rgba(0,0,0,0.2); transform: translateY(-2px); }
+  .resultCard img{ width:100%; height:auto; border-radius:4px; }
+  .loadingMsg, .emptyMsg{ text-align:center; color:#888; padding:20px; font-size:13px; }
+
+  /* Slot detail panel */
+  .detailRow{ display:flex; gap:14px; margin-bottom:14px; }
+  .detailRow img{ width:110px; border-radius:8px; box-shadow:0 4px 10px rgba(0,0,0,0.2); }
+  .detailFields label{ display:block; font-size:12px; color:#555; margin-top:8px; }
+  .detailFields input, .detailFields select, .detailFields textarea{
+    width:100%; padding:6px 8px; border:1px solid #ccc; border-radius:6px; font-size:13px; margin-top:2px;
+  }
+  .toggleOwned{
+    display:inline-flex; border-radius:20px; overflow:hidden; border:1px solid #ccc; margin-top:4px;
+  }
+  .toggleOwned button{
+    border:none; padding:6px 14px; font-size:12px; cursor:pointer; background:#f5f5f5;
+  }
+  .toggleOwned button.active.owned{ background: var(--owned); color:#fff; }
+  .toggleOwned button.active.missing{ background: var(--missing); color:#fff; }
+
+  /* loading indicator */
+  #loadingIndicator{
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background: rgba(0,0,0,0.5); color:#fff; font-size:14px; z-index:200; flex-direction:column; gap:10px;
+  }
+  #loadingIndicator.hide{ display:none; }
+  .spinner{
+    width:34px; height:34px; border:4px solid rgba(255,255,255,0.3); border-top-color:#fff;
+    border-radius:50%; animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+
+  #toast{
+    position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+    background: rgba(0,0,0,0.8); color:#fff; padding:8px 16px; border-radius:20px;
+    font-size:13px; z-index: 300; opacity:0; transition: opacity .3s ease; pointer-events:none;
+  }
+  #toast.show{ opacity:1; }
+</style>
+</head>
+<body>
+
+<!-- ============== COVER ============== -->
+<div id="coverStage">
+  <div id="cover">
+    <svg class="firemark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+      <path d="M50 8 C40 22 30 30 30 46 C30 60 38 70 50 70 C62 70 70 60 70 46 C70 38 66 32 62 28 C63 38 58 42 53 40 C58 34 55 24 50 8 Z"
+            fill="#ffe066" stroke="#7a1505" stroke-width="2"/>
+      <path d="M50 30 C45 38 42 44 42 52 C42 60 46 65 50 65 C54 65 58 60 58 52 C58 47 56 44 54 41 C54 47 51 49 49 47 C52 43 51 37 50 30 Z"
+            fill="#ff7a1a" stroke="#7a1505" stroke-width="1.5"/>
+    </svg>
+    <h1>Loui's Binder</h1>
+    <div class="tap-prompt">tap to open</div>
+  </div>
+</div>
+
+<!-- ============== MAIN APP ============== -->
+<div id="app">
+  <div id="topBar">
+    <div class="summary">
+      <span><span class="dot owned"></span><span id="ownedCount">0</span> owned</span>
+      <span><span class="dot missing"></span><span id="missingCount">0</span> missing</span>
+    </div>
+    <button id="settingsBtn">⚙ Settings</button>
+  </div>
+
+  <div id="binderWrap">
+    <div id="binder">
+      <div class="pageSlotHolder" id="pageHolder">
+        <!-- pages injected here as .pageFace -->
+      </div>
+    </div>
+    <button class="navArrow" id="prevBtn">‹</button>
+    <button class="navArrow" id="nextBtn">›</button>
+    <div id="pageCounter">Page 1 of 1</div>
+  </div>
+</div>
+
+<!-- ============== OVERLAY (search / detail / settings) ============== -->
+<div id="overlay">
+  <div class="panel" id="panelContent"></div>
+</div>
+
+<div id="loadingIndicator" class="hide">
+  <div class="spinner"></div>
+  <div id="loadingText">Loading your binder…</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* =====================================================================
+   FIREBASE CONFIG
+   ---------------------------------------------------------------------
+   Paste your real Firebase project config below. To get it:
+   1. Go to https://console.firebase.google.com → create/open a project
+   2. Project settings → General → "Your apps" → Web app → copy config
+   3. Enable Firestore: Build → Firestore Database → Create database
+   4. (Recommended for a personal app) Set Firestore rules to allow
+      read/write only for your own use, e.g. during development:
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /{document=**} { allow read, write: if true; }
+          }
+        }
+      Lock this down later if you add real authentication.
+   Until you paste real values here, the app runs in offline/local mode
+   (saved to localStorage) so you can still use and test it.
+===================================================================== */
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+
+const BINDER_DOC_PATH = { collection: "binders", doc: "louis-binder" };
+const PAGES_COUNT = 12;
+const SLOTS_PER_PAGE = 9;
+const LOCAL_KEY = "louis_binder_local_v1";
+
+let db = null;
+let firebaseReady = false;
+
+function isFirebaseConfigured(){
+  return firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY" && firebaseConfig.projectId !== "YOUR_PROJECT_ID";
+}
+
+try {
+  if (isFirebaseConfigured() && window.firebase) {
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    firebaseReady = true;
+  }
+} catch (e) {
+  console.warn("Firebase init failed, falling back to local storage.", e);
+  firebaseReady = false;
+}
+
+/* ---------------------------------------------------------------------
+   STATE
+   binderState = {
+     apiKey: "",
+     pages: [ [slot,slot,...9], [slot,...9], ... ]  // slot or null
+   }
+   slot = { cardId, name, image, set, owned, quantity, condition, notes }
+--------------------------------------------------------------------- */
+let binderState = {
+  apiKey: "",
+  pages: makeEmptyPages(PAGES_COUNT)
+};
+
+function makeEmptyPages(count){
+  const pages = [];
+  for (let p = 0; p < count; p++){
+    pages.push(new Array(SLOTS_PER_PAGE).fill(null));
+  }
+  return pages;
+}
+
+let currentSpread = 0; // a "spread" = two facing pages (left,right), but we treat pages individually flipping
+let activeSlotRef = null; // {pageIndex, slotIndex} when detail panel open
+let pendingPickSlotRef = null; // when search panel open for placing a card
+
+/* ---------------------------------------------------------------------
+   PERSISTENCE
+--------------------------------------------------------------------- */
+function showLoading(text){
+  document.getElementById('loadingText').textContent = text || "Loading…";
+  document.getElementById('loadingIndicator').classList.remove('hide');
+}
+function hideLoading(){
+  document.getElementById('loadingIndicator').classList.add('hide');
+}
+
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (raw) return JSON.parse(raw);
+  }catch(e){}
+  return null;
+}
+function saveLocal(){
+  try{ localStorage.setItem(LOCAL_KEY, JSON.stringify(binderState)); }catch(e){}
+}
+
+async function loadBinder(){
+  showLoading("Loading your binder…");
+  if (firebaseReady){
+    try{
+      const ref = db.collection(BINDER_DOC_PATH.collection).doc(BINDER_DOC_PATH.doc);
+      const snap = await ref.get();
+      if (snap.exists){
+        const data = snap.data();
+        binderState = normalizeLoaded(data);
+      } else {
+        await ref.set(binderState);
+      }
+      ref.onSnapshot((doc) => {
+        if (doc.exists){
+          binderState = normalizeLoaded(doc.data());
+          renderAll();
+        }
+      });
+    }catch(e){
+      console.warn("Firestore load failed, using local storage.", e);
+      const local = loadLocal();
+      if (local) binderState = normalizeLoaded(local);
+      toast("Cloud sync unavailable — using local storage.");
+    }
+  } else {
+    const local = loadLocal();
+    if (local) binderState = normalizeLoaded(local);
+  }
+  hideLoading();
+  renderAll();
+}
+
+function normalizeLoaded(data){
+  const out = { apiKey: data.apiKey || "", pages: [] };
+  const pages = Array.isArray(data.pages) ? data.pages : [];
+  for (let p = 0; p < PAGES_COUNT; p++){
+    const src = pages[p] || [];
+    const page = new Array(SLOTS_PER_PAGE).fill(null);
+    for (let s = 0; s < SLOTS_PER_PAGE; s++){
+      page[s] = src[s] || null;
+    }
+    out.pages.push(page);
+  }
+  return out;
+}
+
+let saveTimer = null;
+function persist(){
+  saveLocal();
+  if (firebaseReady){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      try{
+        const ref = db.collection(BINDER_DOC_PATH.collection).doc(BINDER_DOC_PATH.doc);
+        await ref.set(binderState);
+      }catch(e){
+        console.warn("Failed to save to Firestore.", e);
+        toast("Couldn't sync to cloud — saved locally.");
+      }
+    }, 250);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   COVER OPEN
+--------------------------------------------------------------------- */
+document.getElementById('cover').addEventListener('click', () => {
+  const cover = document.getElementById('cover');
+  cover.classList.add('opened');
+  setTimeout(() => {
+    document.getElementById('coverStage').classList.add('hide');
+    document.getElementById('app').classList.add('visible');
+    loadBinder();
+  }, 900);
+});
+
+/* ---------------------------------------------------------------------
+   RENDERING — page flip
+   We render ONE page at a time inside #pageHolder using a flip animation
+   between the outgoing and incoming page face.
+--------------------------------------------------------------------- */
+function renderAll(){
+  renderPage(currentSpread, null);
+  updateCounter();
+  updateSummary();
+}
+
+function updateCounter(){
+  document.getElementById('pageCounter').textContent = `Page ${currentSpread+1} of ${PAGES_COUNT}`;
+  document.getElementById('prevBtn').disabled = currentSpread <= 0;
+  document.getElementById('nextBtn').disabled = currentSpread >= PAGES_COUNT - 1;
+}
+
+function updateSummary(){
+  let owned = 0, missing = 0;
+  binderState.pages.forEach(page => page.forEach(slot => {
+    if (slot){
+      if (slot.owned) owned++; else missing++;
+    }
+  }));
+  document.getElementById('ownedCount').textContent = owned;
+  document.getElementById('missingCount').textContent = missing;
+}
+
+function buildPageFaceEl(pageIndex){
+  const face = document.createElement('div');
+  face.className = 'pageFace';
+  const header = document.createElement('div');
+  header.className = 'pageHeader';
+  header.textContent = `— Page ${pageIndex+1} —`;
+  const grid = document.createElement('div');
+  grid.className = 'grid3x3';
+
+  const page = binderState.pages[pageIndex] || new Array(SLOTS_PER_PAGE).fill(null);
+  for (let s = 0; s < SLOTS_PER_PAGE; s++){
+    grid.appendChild(buildPocketEl(pageIndex, s, page[s]));
+  }
+  face.appendChild(header);
+  face.appendChild(grid);
+  return face;
+}
+
+function buildPocketEl(pageIndex, slotIndex, slot){
+  const pocket = document.createElement('div');
+  pocket.className = 'pocket' + (slot ? ' filled' : '') + (slot && !slot.owned ? ' missing' : '');
+  pocket.addEventListener('click', () => onPocketClick(pageIndex, slotIndex));
+
+  if (slot){
+    const img = document.createElement('img');
+    img.src = slot.image || '';
+    img.alt = slot.name || 'card';
+    pocket.appendChild(img);
+
+    const dot = document.createElement('div');
+    dot.className = 'ownedDot ' + (slot.owned ? 'owned' : 'missing');
+    pocket.appendChild(dot);
+
+    if (slot.quantity && slot.quantity > 1){
+      const badge = document.createElement('div');
+      badge.className = 'qtyBadge';
+      badge.textContent = 'x' + slot.quantity;
+      pocket.appendChild(badge);
+    }
+  } else {
+    const plus = document.createElement('div');
+    plus.className = 'plus';
+    plus.textContent = '+';
+    pocket.appendChild(plus);
+  }
+  return pocket;
+}
+
+let isFlipping = false;
+let flipCleanupTimer = null;
+
+function renderPage(pageIndex, direction){
+  const holder = document.getElementById('pageHolder');
+  const newFace = buildPageFaceEl(pageIndex);
+
+  if (!direction){
+    clearTimeout(flipCleanupTimer);
+    isFlipping = false;
+    holder.innerHTML = '';
+    holder.appendChild(newFace);
+    return;
+  }
+
+  // cancel any in-flight flip so old faces never stack up / overlap
+  clearTimeout(flipCleanupTimer);
+  const oldFaces = Array.from(holder.querySelectorAll('.pageFace'));
+  isFlipping = true;
+
+  newFace.style.transform = direction === 'next' ? 'rotateY(90deg)' : 'rotateY(-90deg)';
+  newFace.style.opacity = '0';
+  holder.appendChild(newFace);
+
+  requestAnimationFrame(() => {
+    oldFaces.forEach(oldFace => {
+      oldFace.style.transition = 'transform .45s ease-in, opacity .45s ease-in';
+      oldFace.style.transform = direction === 'next' ? 'rotateY(-90deg)' : 'rotateY(90deg)';
+      oldFace.style.opacity = '0';
+    });
+    newFace.style.transition = 'transform .45s ease-out .15s, opacity .3s ease-out .2s';
+    newFace.style.transform = 'rotateY(0deg)';
+    newFace.style.opacity = '1';
+  });
+
+  flipCleanupTimer = setTimeout(() => {
+    oldFaces.forEach(oldFace => {
+      if (oldFace.parentNode) oldFace.parentNode.removeChild(oldFace);
+    });
+    isFlipping = false;
+  }, 480);
+}
+
+function goNext(){
+  if (isFlipping || currentSpread >= PAGES_COUNT - 1) return;
+  currentSpread++;
+  renderPage(currentSpread, 'next');
+  updateCounter();
+}
+function goPrev(){
+  if (isFlipping || currentSpread <= 0) return;
+  currentSpread--;
+  renderPage(currentSpread, 'prev');
+  updateCounter();
+}
+
+document.getElementById('nextBtn').addEventListener('click', goNext);
+document.getElementById('prevBtn').addEventListener('click', goPrev);
+
+// keyboard arrows
+document.addEventListener('keydown', (e) => {
+  if (!document.getElementById('app').classList.contains('visible')) return;
+  if (document.getElementById('overlay').classList.contains('visible')) return;
+  if (e.key === 'ArrowRight') goNext();
+  if (e.key === 'ArrowLeft') goPrev();
+});
+
+// touch swipe
+let touchStartX = null;
+document.getElementById('binderWrap').addEventListener('touchstart', (e) => {
+  touchStartX = e.touches[0].clientX;
+}, { passive: true });
+document.getElementById('binderWrap').addEventListener('touchend', (e) => {
+  if (touchStartX === null) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(dx) > 50){
+    if (dx < 0) goNext(); else goPrev();
+  }
+  touchStartX = null;
+});
+
+/* ---------------------------------------------------------------------
+   POCKET CLICK -> open search (empty) or detail (filled)
+--------------------------------------------------------------------- */
+function onPocketClick(pageIndex, slotIndex){
+  const slot = binderState.pages[pageIndex][slotIndex];
+  if (slot){
+    openDetailPanel(pageIndex, slotIndex);
+  } else {
+    openSearchPanel(pageIndex, slotIndex);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   OVERLAY HELPERS
+--------------------------------------------------------------------- */
+function showOverlay(html){
+  document.getElementById('panelContent').innerHTML = html;
+  document.getElementById('overlay').classList.add('visible');
+}
+function hideOverlay(){
+  document.getElementById('overlay').classList.remove('visible');
+  pendingPickSlotRef = null;
+  activeSlotRef = null;
+}
+document.getElementById('overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'overlay') hideOverlay();
+});
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+/* ---------------------------------------------------------------------
+   SEARCH PANEL (Pokémon TCG API)
+--------------------------------------------------------------------- */
+function openSearchPanel(pageIndex, slotIndex){
+  pendingPickSlotRef = { pageIndex, slotIndex };
+  showOverlay(`
+    <h2>Find a card</h2>
+    <input type="text" id="searchInput" placeholder="Card name, e.g. Charizard" autofocus>
+    <button class="primary" id="searchGoBtn">Search</button>
+    <button class="secondary" id="searchCancelBtn">Cancel</button>
+    <div id="resultsGrid"></div>
+  `);
+  const input = document.getElementById('searchInput');
+  input.focus();
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+  document.getElementById('searchGoBtn').addEventListener('click', doSearch);
+  document.getElementById('searchCancelBtn').addEventListener('click', hideOverlay);
+}
+
+async function doSearch(){
+  const q = document.getElementById('searchInput').value.trim();
+  const resultsGrid = document.getElementById('resultsGrid');
+  if (!q){ resultsGrid.innerHTML = '<div class="emptyMsg">Type a card name to search.</div>'; return; }
+  resultsGrid.innerHTML = '<div class="loadingMsg">Searching…</div>';
+
+  try{
+    const headers = {};
+    if (binderState.apiKey) headers['X-Api-Key'] = binderState.apiKey;
+    const url = `https://api.pokemontcg.io/v2/cards?q=name:${encodeURIComponent(q)}*&pageSize=24`;
+    const res = await fetch(url, { headers });
+    if (!res.ok) throw new Error('API error ' + res.status);
+    const data = await res.json();
+    const cards = data.data || [];
+    if (cards.length === 0){
+      resultsGrid.innerHTML = '<div class="emptyMsg">No cards found.</div>';
+      return;
+    }
+    resultsGrid.innerHTML = '';
+    cards.forEach(card => {
+      const el = document.createElement('div');
+      el.className = 'resultCard';
+      el.innerHTML = `<img src="${card.images.small}" alt="${escapeHtml(card.name)}"><div>${escapeHtml(card.name)}</div><div style="color:#999">${escapeHtml(card.set ? card.set.name : '')}</div>`;
+      el.addEventListener('click', () => placeCard(card));
+      resultsGrid.appendChild(el);
+    });
+  }catch(e){
+    console.warn(e);
+    resultsGrid.innerHTML = '<div class="emptyMsg">Search failed. Check your connection or API key.</div>';
+  }
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function placeCard(card){
+  if (!pendingPickSlotRef) return;
+  const { pageIndex, slotIndex } = pendingPickSlotRef;
+  binderState.pages[pageIndex][slotIndex] = {
+    cardId: card.id,
+    name: card.name,
+    image: card.images.large || card.images.small,
+    set: card.set ? card.set.name : '',
+    owned: true,
+    quantity: 1,
+    condition: 'Near Mint',
+    notes: ''
+  };
+  persist();
+  hideOverlay();
+  renderPage(currentSpread, null);
+  updateSummary();
+  toast(`Added ${card.name} to the binder.`);
+}
+
+/* ---------------------------------------------------------------------
+   DETAIL PANEL (owned toggle, qty, condition, notes, remove)
+--------------------------------------------------------------------- */
+function openDetailPanel(pageIndex, slotIndex){
+  activeSlotRef = { pageIndex, slotIndex };
+  const slot = binderState.pages[pageIndex][slotIndex];
+  showOverlay(`
+    <h2>${escapeHtml(slot.name)}</h2>
+    <div class="detailRow">
+      <img src="${slot.image}" alt="${escapeHtml(slot.name)}">
+      <div class="detailFields" style="flex:1">
+        <div style="color:#888; font-size:12px;">${escapeHtml(slot.set || '')}</div>
+        <label>Status</label>
+        <div class="toggleOwned">
+          <button id="ownedBtn" class="${slot.owned ? 'active owned' : ''}">Owned</button>
+          <button id="missingBtn" class="${!slot.owned ? 'active missing' : ''}">Missing</button>
+        </div>
+        <label>Quantity</label>
+        <input type="number" id="qtyInput" min="0" value="${slot.quantity || 1}">
+        <label>Condition</label>
+        <select id="condInput">
+          ${['Mint','Near Mint','Lightly Played','Moderately Played','Heavily Played','Damaged'].map(c =>
+            `<option value="${c}" ${slot.condition === c ? 'selected' : ''}>${c}</option>`).join('')}
+        </select>
+        <label>Notes</label>
+        <textarea id="notesInput" rows="2">${escapeHtml(slot.notes || '')}</textarea>
+      </div>
+    </div>
+    <button class="primary" id="saveDetailBtn">Save</button>
+    <button class="secondary" id="removeDetailBtn" style="background:#f3d4d4;">Remove from slot</button>
+    <div class="closeRow"><button class="secondary" id="closeDetailBtn">Close</button></div>
+  `);
+
+  document.getElementById('ownedBtn').addEventListener('click', () => setOwnedToggle(true));
+  document.getElementById('missingBtn').addEventListener('click', () => setOwnedToggle(false));
+  document.getElementById('saveDetailBtn').addEventListener('click', saveDetail);
+  document.getElementById('removeDetailBtn').addEventListener('click', removeSlot);
+  document.getElementById('closeDetailBtn').addEventListener('click', hideOverlay);
+}
+
+function setOwnedToggle(owned){
+  document.getElementById('ownedBtn').className = owned ? 'active owned' : '';
+  document.getElementById('missingBtn').className = !owned ? 'active missing' : '';
+  document.getElementById('ownedBtn').dataset.owned = owned ? '1' : '0';
+}
+
+function saveDetail(){
+  if (!activeSlotRef) return;
+  const { pageIndex, slotIndex } = activeSlotRef;
+  const slot = binderState.pages[pageIndex][slotIndex];
+  const ownedBtnActive = document.getElementById('ownedBtn').classList.contains('active');
+  slot.owned = ownedBtnActive;
+  slot.quantity = parseInt(document.getElementById('qtyInput').value, 10) || 0;
+  slot.condition = document.getElementById('condInput').value;
+  slot.notes = document.getElementById('notesInput').value;
+  persist();
+  hideOverlay();
+  renderPage(currentSpread, null);
+  updateSummary();
+  toast('Saved.');
+}
+
+function removeSlot(){
+  if (!activeSlotRef) return;
+  const { pageIndex, slotIndex } = activeSlotRef;
+  binderState.pages[pageIndex][slotIndex] = null;
+  persist();
+  hideOverlay();
+  renderPage(currentSpread, null);
+  updateSummary();
+  toast('Removed from binder.');
+}
+
+/* ---------------------------------------------------------------------
+   SETTINGS PANEL (API key)
+--------------------------------------------------------------------- */
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  showOverlay(`
+    <h2>Settings</h2>
+    <label style="font-size:12px;color:#555;">Pokémon TCG API key (optional — raises rate limit)</label>
+    <input type="text" id="apiKeyInput" placeholder="Paste API key here" value="${escapeHtml(binderState.apiKey || '')}">
+    <p style="font-size:12px;color:#888;">
+      Get a free key at <span style="color:#555">pokemontcg.io</span>. Works without one, just rate-limited.
+    </p>
+    <p style="font-size:12px;color:#888;">
+      Cloud sync: ${firebaseReady ? '<span style="color:green">connected to Firebase</span>' : '<span style="color:#a55">not configured — using local storage on this device only. Paste your Firebase config in the script to enable cross-device sync.</span>'}
+    </p>
+    <button class="primary" id="saveSettingsBtn">Save</button>
+    <div class="closeRow"><button class="secondary" id="closeSettingsBtn">Close</button></div>
+  `);
+  document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+    binderState.apiKey = document.getElementById('apiKeyInput').value.trim();
+    persist();
+    hideOverlay();
+    toast('Settings saved.');
+  });
+  document.getElementById('closeSettingsBtn').addEventListener('click', hideOverlay);
+});
+
+</script>
+</body>
+</html>
