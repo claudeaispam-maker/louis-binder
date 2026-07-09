@@ -322,6 +322,63 @@
     font-size:13px; z-index: 300; opacity:0; transition: opacity .3s ease; pointer-events:none;
   }
   #toast.show{ opacity:1; }
+
+  /* ---------- SCAN FEATURE ---------- */
+  .pageHeader{
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    padding:6px 10px 2px; flex-shrink:0;
+  }
+  .pageHeaderLabel{ font-family:Georgia,serif; color:var(--leather-dark); font-size:13px; opacity:0.7; }
+  .scanPageBtn{
+    background:var(--leather); color:#fff; border:none;
+    padding:3px 9px; border-radius:12px; font-size:10px; cursor:pointer;
+    transition:background .15s ease; white-space:nowrap;
+  }
+  .scanPageBtn:hover{ background:var(--leather-dark); }
+  .scanReviewGrid{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:7px; margin-top:10px;
+  }
+  .scanSlot{
+    border:2px solid #ddd; border-radius:8px; overflow:hidden;
+    background:#f9f9f9; display:flex; flex-direction:column;
+  }
+  .scanSlot.confirmed{ border-color:var(--owned); }
+  .scanSlot.needs-fix{ border-color:#e88; }
+  .scanSlotTop{
+    position:relative; aspect-ratio:3/4; overflow:hidden; background:#eee; flex-shrink:0;
+  }
+  .scanSlotTop img{ width:100%; height:100%; object-fit:cover; }
+  .scanSlotNum{
+    position:absolute; top:3px; left:3px;
+    background:rgba(0,0,0,0.65); color:#fff; font-size:9px;
+    padding:1px 5px; border-radius:8px;
+  }
+  .confBadge{
+    position:absolute; top:3px; right:3px;
+    font-size:9px; padding:2px 4px; border-radius:6px; font-weight:bold;
+  }
+  .confBadge.high{ background:#d4edda; color:#155724; }
+  .confBadge.medium{ background:#fff3cd; color:#856404; }
+  .confBadge.cached{ background:#cce5ff; color:#004085; }
+  .confBadge.low,.confBadge.unknown,.confBadge.fixed{ background:#f8d7da; color:#721c24; }
+  .confBadge.fixed{ background:#e2d9f3; color:#4a235a; }
+  .scanSlotInfo{ padding:4px 6px; font-size:10px; color:#333; line-height:1.3; flex:1; }
+  .scanSlotInfo strong{ display:block; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .scanSlotInfo .setName{ color:#999; font-size:9px; }
+  .scanFixBtn{
+    width:100%; border:none; border-top:1px solid #eee;
+    background:var(--leather); color:#fff; font-size:10px; padding:5px; cursor:pointer;
+  }
+  .scanFixBtn:hover{ background:var(--leather-dark); }
+  .scanSaveAllBtn{
+    width:100%; margin-top:12px; padding:11px;
+    background:var(--owned); color:#fff; border:none;
+    border-radius:8px; font-size:14px; cursor:pointer; font-weight:600;
+  }
+  .scanSaveAllBtn:hover{ filter:brightness(1.1); }
+  .scanNote{ font-size:11px; color:#aaa; margin:5px 0 0; text-align:center; }
+  .scanFixHeader{ display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .scanFixHeader img{ width:64px; border-radius:6px; border:1px solid #ddd; flex-shrink:0; }
 </style>
 </head>
 <body>
@@ -373,6 +430,9 @@
 </div>
 
 <div id="toast"></div>
+
+<!-- hidden file input for scan — accept camera or gallery -->
+<input type="file" id="scanFileInput" accept="image/*" capture="environment" style="display:none">
 
 <script>
 /* =====================================================================
@@ -436,6 +496,7 @@ try {
 --------------------------------------------------------------------- */
 let binderState = {
   apiKey: "",
+  anthropicKey: "",
   pages: makeEmptyPages(PAGES_COUNT)
 };
 
@@ -503,10 +564,11 @@ async function loadBinder(){
   }
   hideLoading();
   renderAll();
+  loadCorrections();
 }
 
 function normalizeLoaded(data){
-  const out = { apiKey: data.apiKey || "", pages: [] };
+  const out = { apiKey: data.apiKey || "", anthropicKey: data.anthropicKey || "", pages: [] };
   const pages = Array.isArray(data.pages) ? data.pages : [];
   for (let p = 0; p < PAGES_COUNT; p++){
     const src = pages[p] || [];
@@ -582,7 +644,15 @@ function buildPageFaceEl(pageIndex){
   face.className = 'pageFace';
   const header = document.createElement('div');
   header.className = 'pageHeader';
-  header.textContent = `— Page ${pageIndex+1} —`;
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'pageHeaderLabel';
+  labelSpan.textContent = `— Page ${pageIndex+1} —`;
+  const scanBtn = document.createElement('button');
+  scanBtn.className = 'scanPageBtn';
+  scanBtn.textContent = '📷 Scan Page';
+  scanBtn.addEventListener('click', (e) => { e.stopPropagation(); openScanFlow(pageIndex); });
+  header.appendChild(labelSpan);
+  header.appendChild(scanBtn);
   const grid = document.createElement('div');
   grid.className = 'grid3x3';
 
@@ -798,6 +868,32 @@ function escapeHtml(s){
 
 function placeCard(card){
   if (!pendingPickSlotRef) return;
+
+  // scan-fix mode: update review data instead of writing to binder directly
+  if (pendingPickSlotRef.isScanFix){
+    const { scanSlotIndex } = pendingPickSlotRef;
+    const hash = scanReviewData[scanSlotIndex]?.hash;
+    const cellDataUrl = scanReviewData[scanSlotIndex]?.cellDataUrl;
+    scanReviewData[scanSlotIndex] = {
+      cardId: card.id,
+      name: card.name,
+      image: card.images.large || card.images.small,
+      set: card.set?.name || '',
+      confidence: 'fixed',
+      hash,
+      cellDataUrl
+    };
+    if (hash) saveCorrection(hash, {
+      cardId: card.id, name: card.name,
+      image: card.images.large || card.images.small,
+      set: card.set?.name || ''
+    });
+    pendingPickSlotRef = null;
+    openScanReviewPanel(scanPageIndex, scanReviewData);
+    toast(`Slot ${scanSlotIndex + 1} → ${card.name}`);
+    return;
+  }
+
   const { pageIndex, slotIndex } = pendingPickSlotRef;
   binderState.pages[pageIndex][slotIndex] = {
     cardId: card.id,
@@ -889,25 +985,400 @@ function removeSlot(){
   toast('Removed from binder.');
 }
 
+/* =====================================================================
+   SCAN PAGE FEATURE
+   Flow: photo upload → resize → crop 9 cells → hash each cell →
+         check correction cache → call Claude vision for unknowns →
+         search TCG API for official card data → review panel →
+         user confirms / fixes → save to binder + update correction cache
+===================================================================== */
+
+let scanReviewData = [];
+let scanPageIndex = -1;
+let correctionsCache = {};
+
+// ---- file input wiring ----
+const scanFileInput = document.getElementById('scanFileInput');
+function openScanFlow(pageIndex){
+  if (!binderState.anthropicKey){
+    toast('Add your Claude API key in ⚙ Settings to use Scan Page.');
+    return;
+  }
+  scanPageIndex = pageIndex;
+  scanFileInput.value = '';
+  scanFileInput.click();
+}
+scanFileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  await processScanFile(file, scanPageIndex);
+});
+
+// ---- image helpers ----
+function fileToDataUrl(file){
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = e => res(e.target.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+function resizeImage(dataUrl, maxSide){
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      res(c.toDataURL('image/jpeg', 0.88));
+    };
+    img.src = dataUrl;
+  });
+}
+
+function cropGrid(dataUrl){
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const cw = Math.floor(img.width / 3);
+      const ch = Math.floor(img.height / 3);
+      const cells = [];
+      for (let row = 0; row < 3; row++){
+        for (let col = 0; col < 3; col++){
+          const c = document.createElement('canvas');
+          c.width = cw; c.height = ch;
+          c.getContext('2d').drawImage(img, col*cw, row*ch, cw, ch, 0, 0, cw, ch);
+          cells.push(c.toDataURL('image/jpeg', 0.82));
+        }
+      }
+      res(cells);
+    };
+    img.src = dataUrl;
+  });
+}
+
+// ---- perceptual hash (dHash 8x8 = 64 bits) ----
+function computeDHash(dataUrl){
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = 9; c.height = 8;
+      const ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, 9, 8);
+      const d = ctx.getImageData(0, 0, 9, 8).data;
+      let hash = '';
+      for (let y = 0; y < 8; y++){
+        for (let x = 0; x < 8; x++){
+          const i = (y * 9 + x) * 4;
+          const j = (y * 9 + x + 1) * 4;
+          const gL = 0.299*d[i]   + 0.587*d[i+1] + 0.114*d[i+2];
+          const gR = 0.299*d[j]   + 0.587*d[j+1] + 0.114*d[j+2];
+          hash += gL > gR ? '1' : '0';
+        }
+      }
+      res(hash);
+    };
+    img.src = dataUrl;
+  });
+}
+
+function hashDistance(h1, h2){
+  let d = 0;
+  for (let i = 0; i < h1.length; i++) if (h1[i] !== h2[i]) d++;
+  return d;
+}
+
+// ---- correction cache (Firestore or localStorage) ----
+async function loadCorrections(){
+  if (firebaseReady){
+    try{
+      const snap = await db.collection('corrections').get();
+      snap.forEach(doc => { correctionsCache[doc.id] = doc.data(); });
+    }catch(e){ /* corrections are optional */ }
+  } else {
+    try{
+      const raw = localStorage.getItem('louis_binder_corrections');
+      if (raw) correctionsCache = JSON.parse(raw);
+    }catch(e){}
+  }
+}
+
+async function saveCorrection(hash, cardData){
+  correctionsCache[hash] = cardData;
+  if (firebaseReady){
+    try{ await db.collection('corrections').doc(hash).set(cardData); }catch(e){}
+  } else {
+    try{ localStorage.setItem('louis_binder_corrections', JSON.stringify(correctionsCache)); }catch(e){}
+  }
+}
+
+function lookupCorrection(hash){
+  if (correctionsCache[hash]) return { ...correctionsCache[hash], fromCache: true };
+  for (const [h, data] of Object.entries(correctionsCache)){
+    if (hashDistance(hash, h) <= 8) return { ...data, fromCache: true };
+  }
+  return null;
+}
+
+// ---- Claude vision API call ----
+async function identifyWithClaude(imageDataUrl, apiKey){
+  const base64 = imageDataUrl.split(',')[1];
+  const mediaType = imageDataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 1024,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: `This is a photo of a Pokémon card binder page with a 3×3 grid of 9 card slots. Identify each card left to right, top to bottom (slot 1 = top-left, slot 9 = bottom-right).
+
+For each slot provide the Pokémon card name, set name, and card number if visible. If a slot is empty or unreadable, use name "unknown".
+
+Respond ONLY with a valid JSON array of exactly 9 objects, no other text:
+[{"slot":1,"name":"Charizard","set":"Base Set","number":"4/102","confidence":"high"},...]
+
+Use confidence "high", "medium", or "low" based on how clearly you can read the card.` }
+        ]
+      }]
+    })
+  });
+
+  if (!res.ok){
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Claude API error ${res.status}`);
+  }
+
+  const data = await res.json();
+  const text = data.content?.[0]?.text || '[]';
+  const match = text.match(/\[[\s\S]*\]/);
+  if (!match) throw new Error("Could not parse Claude response as JSON");
+  const parsed = JSON.parse(match[0]);
+
+  const result = new Array(9).fill(null).map(() => ({ name: 'unknown', set: '', number: '', confidence: 'low' }));
+  parsed.forEach(item => {
+    const idx = (item.slot || 1) - 1;
+    if (idx >= 0 && idx < 9) result[idx] = { name: item.name || 'unknown', set: item.set || '', number: item.number || '', confidence: item.confidence || 'low' };
+  });
+  return result;
+}
+
+// ---- TCG API lookup for a guessed name+set ----
+async function searchTCGForCard(name, set){
+  try{
+    const headers = {};
+    if (binderState.apiKey) headers['X-Api-Key'] = binderState.apiKey;
+    const url = `https://api.pokemontcg.io/v2/cards?q=name:${encodeURIComponent(name)}*&pageSize=6`;
+    const res = await fetch(url, { headers });
+    const data = await res.json();
+    const cards = data.data || [];
+    if (!cards.length) return null;
+    if (set){
+      const hit = cards.find(c => c.set?.name?.toLowerCase().includes(set.toLowerCase().slice(0, 6)));
+      if (hit) return hit;
+    }
+    return cards[0];
+  }catch(e){ return null; }
+}
+
+// ---- main scan processor ----
+async function processScanFile(file, pageIndex){
+  showLoading('Reading image…');
+  try{
+    const dataUrl = await fileToDataUrl(file);
+    const resized  = await resizeImage(dataUrl, 1200);
+
+    showLoading('Cropping card slots…');
+    const cellDataUrls = await cropGrid(resized);
+    const cellHashes   = await Promise.all(cellDataUrls.map(computeDHash));
+    const cached       = cellHashes.map(lookupCorrection);
+
+    // Only call Claude for slots not in cache
+    const needAI = cached.map((c, i) => c === null ? i : -1).filter(i => i >= 0);
+    let claudeGuesses = new Array(9).fill(null).map(() => ({ name: 'unknown', set: '', confidence: 'low' }));
+
+    if (needAI.length > 0){
+      showLoading(`Identifying ${needAI.length} card${needAI.length > 1 ? 's' : ''} with Claude…`);
+      claudeGuesses = await identifyWithClaude(resized, binderState.anthropicKey);
+    }
+
+    // Merge cache + Claude results
+    showLoading('Matching official card data…');
+    const resolved = await Promise.all(cellHashes.map(async (hash, i) => {
+      const base = { hash, cellDataUrl: cellDataUrls[i], slotIndex: i };
+
+      if (cached[i]){
+        return { ...base, ...cached[i], confidence: 'cached', fromCache: true };
+      }
+
+      const guess = claudeGuesses[i];
+      if (!guess || guess.name === 'unknown'){
+        return { ...base, name: null, image: null, set: '', confidence: 'unknown' };
+      }
+
+      const card = await searchTCGForCard(guess.name, guess.set);
+      return {
+        ...base,
+        cardId: card?.id || null,
+        name: card?.name || guess.name,
+        image: card?.images?.large || card?.images?.small || null,
+        set: card?.set?.name || guess.set || '',
+        confidence: guess.confidence
+      };
+    }));
+
+    hideLoading();
+    openScanReviewPanel(pageIndex, resolved);
+
+  }catch(err){
+    hideLoading();
+    console.error(err);
+    toast('Scan failed: ' + (err.message || 'unknown error'));
+  }
+}
+
+// ---- review panel ----
+function openScanReviewPanel(pageIndex, resolved){
+  scanReviewData  = resolved;
+  scanPageIndex   = pageIndex;
+
+  showOverlay(`
+    <h2>Review scan — Page ${pageIndex + 1}</h2>
+    <p style="font-size:12px;color:#888;margin:0 0 8px;">
+      Tap <strong>Fix</strong> on any wrong card to correct it. Corrections are saved so the same card is recognised instantly next time.
+    </p>
+    <div class="scanReviewGrid" id="scanReviewGrid"></div>
+    <button class="scanSaveAllBtn" id="scanSaveAllBtn">✓ Save to binder</button>
+    <p class="scanNote">Empty / unidentified slots are skipped.</p>
+    <div class="closeRow" style="margin-top:8px;">
+      <button class="secondary" id="scanCancelBtn">Cancel</button>
+    </div>
+  `);
+
+  const grid = document.getElementById('scanReviewGrid');
+  resolved.forEach((r, i) => {
+    const hasCard  = r.name && r.name !== 'unknown' && r.image;
+    const confLabel = r.fromCache ? 'cached' : (r.confidence || 'unknown');
+
+    const slot = document.createElement('div');
+    slot.className = 'scanSlot ' + (hasCard ? 'confirmed' : 'needs-fix');
+    slot.id = `scanSlot${i}`;
+    slot.innerHTML = `
+      <div class="scanSlotTop">
+        <img src="${hasCard ? r.image : r.cellDataUrl}" alt="slot ${i+1}"
+             onerror="this.src='${r.cellDataUrl}'">
+        <div class="scanSlotNum">${i + 1}</div>
+        <div class="confBadge ${confLabel}">${confLabel}</div>
+      </div>
+      <div class="scanSlotInfo">
+        <strong>${escapeHtml(r.name || '—')}</strong>
+        <span class="setName">${escapeHtml(r.set || 'unknown set')}</span>
+      </div>
+      <button class="scanFixBtn" data-i="${i}">Fix</button>
+    `;
+    slot.querySelector('.scanFixBtn').addEventListener('click', () => openScanFix(i));
+    grid.appendChild(slot);
+  });
+
+  document.getElementById('scanSaveAllBtn').addEventListener('click', () => commitScan(pageIndex));
+  document.getElementById('scanCancelBtn').addEventListener('click', hideOverlay);
+}
+
+// ---- fix a single slot ----
+function openScanFix(slotIndex){
+  const r = scanReviewData[slotIndex];
+  pendingPickSlotRef = { isScanFix: true, scanSlotIndex: slotIndex };
+
+  document.getElementById('panelContent').innerHTML = `
+    <div class="scanFixHeader">
+      <img src="${r.cellDataUrl}" alt="photo crop">
+      <div>
+        <h2 style="margin:0 0 3px;">Fix slot ${slotIndex + 1}</h2>
+        <p style="margin:0;font-size:12px;color:#888;">Current guess: <em>${escapeHtml(r.name || 'unknown')}</em></p>
+      </div>
+    </div>
+    <input type="text" id="searchInput" placeholder="Card name, e.g. Charizard" value="${escapeHtml(r.name && r.name !== 'unknown' ? r.name : '')}" autofocus>
+    <button class="primary" id="searchGoBtn">Search</button>
+    <button class="secondary" id="scanBackBtn">← Back</button>
+    <div id="resultsGrid"></div>
+  `;
+
+  const inp = document.getElementById('searchInput');
+  inp.focus();
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+  document.getElementById('searchGoBtn').addEventListener('click', doSearch);
+  document.getElementById('scanBackBtn').addEventListener('click', () => {
+    pendingPickSlotRef = null;
+    openScanReviewPanel(scanPageIndex, scanReviewData);
+  });
+}
+
+// ---- commit all confirmed slots ----
+function commitScan(pageIndex){
+  let added = 0;
+  scanReviewData.forEach((r, slotIndex) => {
+    if (r.name && r.name !== 'unknown' && r.image){
+      binderState.pages[pageIndex][slotIndex] = {
+        cardId: r.cardId || '',
+        name: r.name,
+        image: r.image,
+        set: r.set || '',
+        owned: true,
+        quantity: 1,
+        condition: 'Near Mint',
+        notes: ''
+      };
+      added++;
+    }
+  });
+  persist();
+  hideOverlay();
+  renderPage(currentSpread, null);
+  updateSummary();
+  toast(`Saved ${added} card${added !== 1 ? 's' : ''} to page ${pageIndex + 1}.`);
+}
+
 /* ---------------------------------------------------------------------
    SETTINGS PANEL (API key)
 --------------------------------------------------------------------- */
 document.getElementById('settingsBtn').addEventListener('click', () => {
   showOverlay(`
     <h2>Settings</h2>
-    <label style="font-size:12px;color:#555;">Pokémon TCG API key (optional — raises rate limit)</label>
-    <input type="text" id="apiKeyInput" placeholder="Paste API key here" value="${escapeHtml(binderState.apiKey || '')}">
-    <p style="font-size:12px;color:#888;">
+    <label style="font-size:12px;color:#555;">Pokémon TCG API key (optional — raises search rate limit)</label>
+    <input type="text" id="apiKeyInput" placeholder="Paste TCG API key here" value="${escapeHtml(binderState.apiKey || '')}">
+    <p style="font-size:12px;color:#888;margin-top:4px;">
       Get a free key at <span style="color:#555">pokemontcg.io</span>. Works without one, just rate-limited.
     </p>
+    <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
+    <label style="font-size:12px;color:#555;">Claude (Anthropic) API key — <strong>required for 📷 Scan Page</strong></label>
+    <input type="text" id="anthropicKeyInput" placeholder="sk-ant-..." value="${escapeHtml(binderState.anthropicKey || '')}">
+    <p style="font-size:12px;color:#888;margin-top:4px;">
+      Get a key at <span style="color:#555">console.anthropic.com</span>. Used to identify cards from your photos (~$0.01–0.05 per page scan). Stored only in your binder data.
+    </p>
+    <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
     <p style="font-size:12px;color:#888;">
-      Cloud sync: ${firebaseReady ? '<span style="color:green">connected to Firebase</span>' : '<span style="color:#a55">not configured — using local storage on this device only. Paste your Firebase config in the script to enable cross-device sync.</span>'}
+      Cloud sync: ${firebaseReady ? '<span style="color:green">✓ connected to Firebase</span>' : '<span style="color:#a55">not configured — using local storage on this device only.</span>'}
     </p>
     <button class="primary" id="saveSettingsBtn">Save</button>
     <div class="closeRow"><button class="secondary" id="closeSettingsBtn">Close</button></div>
   `);
   document.getElementById('saveSettingsBtn').addEventListener('click', () => {
     binderState.apiKey = document.getElementById('apiKeyInput').value.trim();
+    binderState.anthropicKey = document.getElementById('anthropicKeyInput').value.trim();
     persist();
     hideOverlay();
     toast('Settings saved.');
