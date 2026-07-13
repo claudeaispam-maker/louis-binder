@@ -1021,7 +1021,13 @@ function removeSlot(){
 /* ---------------------------------------------------------------------
    PAGE MANAGEMENT — add, remove, reorder
 --------------------------------------------------------------------- */
+const MAX_PAGES = 12;
+
 function addPage(){
+  if (binderState.pages.length >= MAX_PAGES){
+    toast(`Max ${MAX_PAGES} pages reached.`);
+    return;
+  }
   const newPage = new Array(SLOTS_PER_PAGE).fill(null);
   binderState.pages.splice(currentSpread + 1, 0, newPage);
   currentSpread++;
