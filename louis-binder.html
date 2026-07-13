@@ -323,6 +323,23 @@
   }
   #toast.show{ opacity:1; }
 
+  /* ---------- PAGE CONTROLS ---------- */
+  #pageControls{
+    position:absolute; bottom:-62px; left:50%; transform:translateX(-50%);
+    display:flex; align-items:center; gap:6px; white-space:nowrap;
+  }
+  .pageCtrlBtn{
+    background:rgba(255,255,255,0.12); color:#ddd; border:1px solid rgba(255,255,255,0.18);
+    padding:5px 11px; border-radius:14px; font-size:11px; cursor:pointer;
+    transition:background .15s ease, opacity .15s ease;
+  }
+  .pageCtrlBtn:hover:not(:disabled){ background:rgba(255,255,255,0.22); }
+  .pageCtrlBtn:disabled{ opacity:0.28; cursor:default; }
+  .pageCtrlBtn.add{ background:rgba(58,157,79,0.35); border-color:rgba(58,157,79,0.5); color:#9efdb4; }
+  .pageCtrlBtn.add:hover{ background:rgba(58,157,79,0.55); }
+  .pageCtrlBtn.remove{ background:rgba(220,60,60,0.25); border-color:rgba(220,60,60,0.4); color:#ffb3b3; }
+  .pageCtrlBtn.remove:hover:not(:disabled){ background:rgba(220,60,60,0.45); }
+
   /* ---------- SCAN FEATURE ---------- */
   .pageHeader{
     display:flex; align-items:center; justify-content:center; gap:8px;
@@ -416,6 +433,12 @@
     <button class="navArrow" id="prevBtn">‹</button>
     <button class="navArrow" id="nextBtn">›</button>
     <div id="pageCounter">Page 1 of 1</div>
+    <div id="pageControls">
+      <button class="pageCtrlBtn" id="pageMoveL" title="Move page left">← Move</button>
+      <button class="pageCtrlBtn add" id="pageAdd" title="Add a new page after this one">+ Add Page</button>
+      <button class="pageCtrlBtn remove" id="pageRemove" title="Remove this page">✕ Remove</button>
+      <button class="pageCtrlBtn" id="pageMoveR" title="Move page right">Move →</button>
+    </div>
   </div>
 </div>
 
@@ -570,7 +593,9 @@ async function loadBinder(){
 function normalizeLoaded(data){
   const out = { apiKey: data.apiKey || "", anthropicKey: data.anthropicKey || "", pages: [] };
   const pages = Array.isArray(data.pages) ? data.pages : [];
-  for (let p = 0; p < PAGES_COUNT; p++){
+  // use saved page count (variable), fall back to default if none saved
+  const count = pages.length || PAGES_COUNT;
+  for (let p = 0; p < count; p++){
     const src = pages[p] || [];
     const page = new Array(SLOTS_PER_PAGE).fill(null);
     for (let s = 0; s < SLOTS_PER_PAGE; s++){
@@ -623,9 +648,17 @@ function renderAll(){
 }
 
 function updateCounter(){
-  document.getElementById('pageCounter').textContent = `Page ${currentSpread+1} of ${PAGES_COUNT}`;
+  const total = binderState.pages.length;
+  document.getElementById('pageCounter').textContent = `Page ${currentSpread+1} of ${total}`;
   document.getElementById('prevBtn').disabled = currentSpread <= 0;
-  document.getElementById('nextBtn').disabled = currentSpread >= PAGES_COUNT - 1;
+  document.getElementById('nextBtn').disabled = currentSpread >= total - 1;
+  // page control buttons
+  const moveL = document.getElementById('pageMoveL');
+  const moveR = document.getElementById('pageMoveR');
+  const remBtn = document.getElementById('pageRemove');
+  if (moveL) moveL.disabled = currentSpread <= 0;
+  if (moveR) moveR.disabled = currentSpread >= total - 1;
+  if (remBtn) remBtn.disabled = total <= 1;
 }
 
 function updateSummary(){
@@ -739,7 +772,7 @@ function renderPage(pageIndex, direction){
 }
 
 function goNext(){
-  if (isFlipping || currentSpread >= PAGES_COUNT - 1) return;
+  if (isFlipping || currentSpread >= binderState.pages.length - 1) return;
   currentSpread++;
   renderPage(currentSpread, 'next');
   updateCounter();
@@ -984,6 +1017,73 @@ function removeSlot(){
   updateSummary();
   toast('Removed from binder.');
 }
+
+/* ---------------------------------------------------------------------
+   PAGE MANAGEMENT — add, remove, reorder
+--------------------------------------------------------------------- */
+function addPage(){
+  const newPage = new Array(SLOTS_PER_PAGE).fill(null);
+  binderState.pages.splice(currentSpread + 1, 0, newPage);
+  currentSpread++;
+  persist();
+  renderPage(currentSpread, 'next');
+  updateCounter();
+  updateSummary();
+  toast(`Page ${currentSpread + 1} added.`);
+}
+
+function removePage(){
+  const total = binderState.pages.length;
+  if (total <= 1){ toast("Can't remove the last page."); return; }
+  const page = binderState.pages[currentSpread];
+  const hasCards = page.some(s => s !== null);
+  if (hasCards){
+    showOverlay(`
+      <h2>Remove page ${currentSpread + 1}?</h2>
+      <p style="font-size:14px;color:#555;margin:0 0 16px;">
+        This page has cards in it. Removing it will delete all ${page.filter(Boolean).length} card(s) from this page permanently.
+      </p>
+      <button class="primary" id="confirmRemoveBtn" style="background:#c0392b;">Yes, remove</button>
+      <button class="secondary" id="cancelRemoveBtn" style="margin-left:8px;">Cancel</button>
+    `);
+    document.getElementById('confirmRemoveBtn').addEventListener('click', () => {
+      doRemovePage();
+      hideOverlay();
+    });
+    document.getElementById('cancelRemoveBtn').addEventListener('click', hideOverlay);
+  } else {
+    doRemovePage();
+  }
+}
+
+function doRemovePage(){
+  binderState.pages.splice(currentSpread, 1);
+  if (currentSpread >= binderState.pages.length) currentSpread = binderState.pages.length - 1;
+  persist();
+  renderPage(currentSpread, null);
+  updateCounter();
+  updateSummary();
+  toast(`Page removed.`);
+}
+
+function movePage(direction){
+  const from = currentSpread;
+  const to = direction === 'left' ? from - 1 : from + 1;
+  if (to < 0 || to >= binderState.pages.length) return;
+  const tmp = binderState.pages[from];
+  binderState.pages[from] = binderState.pages[to];
+  binderState.pages[to] = tmp;
+  currentSpread = to;
+  persist();
+  renderPage(currentSpread, direction === 'left' ? 'prev' : 'next');
+  updateCounter();
+  toast(`Page moved ${direction === 'left' ? 'back' : 'forward'}.`);
+}
+
+document.getElementById('pageAdd').addEventListener('click', addPage);
+document.getElementById('pageRemove').addEventListener('click', removePage);
+document.getElementById('pageMoveL').addEventListener('click', () => movePage('left'));
+document.getElementById('pageMoveR').addEventListener('click', () => movePage('right'));
 
 /* =====================================================================
    SCAN PAGE FEATURE
