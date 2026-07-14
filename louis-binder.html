@@ -206,10 +206,38 @@
     opacity: 0.65;
   }
   .pocket .qtyBadge{
-    position:absolute; bottom:3px; right:3px;
+    position:absolute; top:4px; right:4px;
     background: rgba(0,0,0,0.6); color:#fff; font-size:10px;
     padding:1px 5px; border-radius:8px;
   }
+  .pocket .priceBadge{
+    position:absolute; bottom:0; left:0; right:0;
+    background: rgba(0,0,0,0.68); color:#ffe066;
+    font-size:10px; font-weight:700; text-align:center;
+    padding:2px 2px; letter-spacing:0.3px;
+    border-radius:0 0 4px 4px;
+  }
+  .pocket .priceBadge.loading{ color:rgba(255,224,102,0.45); font-weight:400; }
+  /* detail panel price section */
+  .priceSection{
+    margin-top:10px; padding:10px; background:#fafafa;
+    border:1px solid #eee; border-radius:8px;
+  }
+  .priceSection label{ font-size:12px; color:#555; display:block; margin-bottom:4px; }
+  .priceMain{
+    display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;
+  }
+  .priceMain .amount{ font-size:20px; font-weight:700; color:#2d7a3a; }
+  .priceMain .amount.none{ color:#aaa; font-size:14px; font-weight:400; }
+  #refreshPriceBtn{
+    background:none; border:1px solid #ccc; border-radius:8px;
+    padding:4px 9px; font-size:11px; cursor:pointer; color:#555;
+  }
+  #refreshPriceBtn:hover{ background:#eee; }
+  .priceBreakdown{ font-size:11px; color:#777; }
+  .priceBreakdown table{ width:100%; border-collapse:collapse; }
+  .priceBreakdown td{ padding:2px 4px; }
+  .priceBreakdown td:last-child{ text-align:right; font-weight:600; color:#444; }
   .pocket .ownedDot{
     position:absolute; top:4px; left:4px; width:10px; height:10px; border-radius:50%;
     box-shadow: 0 0 0 1.5px rgba(255,255,255,0.8);
@@ -695,11 +723,14 @@ function buildPageFaceEl(pageIndex){
   }
   face.appendChild(header);
   face.appendChild(grid);
+  // lazy-fetch prices for any filled slot missing a price
+  setTimeout(() => triggerPriceFetches(pageIndex), 50);
   return face;
 }
 
 function buildPocketEl(pageIndex, slotIndex, slot){
   const pocket = document.createElement('div');
+  pocket.id = `pocket-${pageIndex}-${slotIndex}`;
   pocket.className = 'pocket' + (slot ? ' filled' : '') + (slot && !slot.owned ? ' missing' : '');
   pocket.addEventListener('click', () => onPocketClick(pageIndex, slotIndex));
 
@@ -719,6 +750,16 @@ function buildPocketEl(pageIndex, slotIndex, slot){
       badge.textContent = 'x' + slot.quantity;
       pocket.appendChild(badge);
     }
+
+    const priceBadge = document.createElement('div');
+    if (slot.price != null){
+      priceBadge.className = 'priceBadge';
+      priceBadge.textContent = `$${Number(slot.price).toFixed(2)}`;
+    } else {
+      priceBadge.className = 'priceBadge loading';
+      priceBadge.textContent = '…';
+    }
+    pocket.appendChild(priceBadge);
   } else {
     const plus = document.createElement('div');
     plus.className = 'plus';
@@ -726,6 +767,52 @@ function buildPocketEl(pageIndex, slotIndex, slot){
     pocket.appendChild(plus);
   }
   return pocket;
+}
+
+function getMarketPrice(tcgplayer){
+  if (!tcgplayer?.prices) return null;
+  const order = ['holofoil','reverseHolofoil','normal','1stEditionHolofoil','unlimitedHolofoil'];
+  for (const key of order){
+    const p = tcgplayer.prices[key];
+    if (p?.market != null) return p.market;
+  }
+  // fallback: first variant with any price
+  for (const p of Object.values(tcgplayer.prices)){
+    if (p?.market != null) return p.market;
+  }
+  return null;
+}
+
+async function fetchAndCachePrice(pageIndex, slotIndex){
+  const slot = binderState.pages[pageIndex]?.[slotIndex];
+  if (!slot?.cardId) return;
+  const badgeEl = document.getElementById(`pocket-${pageIndex}-${slotIndex}`)?.querySelector('.priceBadge');
+  try {
+    const apiKey = binderState.apiKey || '';
+    const headers = apiKey ? {'X-Api-Key': apiKey} : {};
+    const res = await fetch(`https://api.pokemontcg.io/v2/cards/${encodeURIComponent(slot.cardId)}`, {headers});
+    if (!res.ok) throw new Error(res.status);
+    const {data} = await res.json();
+    const price = getMarketPrice(data.tcgplayer);
+    slot.price = price;
+    slot.priceDetails = data.tcgplayer?.prices || null;
+    persist();
+    if (badgeEl){
+      badgeEl.classList.remove('loading');
+      badgeEl.textContent = price != null ? `$${price.toFixed(2)}` : '—';
+    }
+  } catch(e){
+    if (badgeEl){ badgeEl.classList.remove('loading'); badgeEl.textContent = '—'; }
+  }
+}
+
+function triggerPriceFetches(pageIndex){
+  const page = binderState.pages[pageIndex] || [];
+  page.forEach((slot, slotIndex) => {
+    if (slot && slot.cardId && slot.price == null){
+      fetchAndCachePrice(pageIndex, slotIndex);
+    }
+  });
 }
 
 let isFlipping = false;
@@ -936,7 +1023,9 @@ function placeCard(card){
     owned: true,
     quantity: 1,
     condition: 'Near Mint',
-    notes: ''
+    notes: '',
+    price: getMarketPrice(card.tcgplayer),
+    priceDetails: card.tcgplayer?.prices ? card.tcgplayer.prices : null
   };
   persist();
   hideOverlay();
@@ -948,6 +1037,28 @@ function placeCard(card){
 /* ---------------------------------------------------------------------
    DETAIL PANEL (owned toggle, qty, condition, notes, remove)
 --------------------------------------------------------------------- */
+function buildPriceSectionHTML(slot){
+  const VARIANT_LABELS = {
+    normal: 'Normal', holofoil: 'Holofoil',
+    reverseHolofoil: 'Reverse Holo', '1stEditionHolofoil': '1st Ed Holo',
+    unlimitedHolofoil: 'Unlimited Holo'
+  };
+  let rows = '';
+  if (slot.priceDetails){
+    for (const [key, p] of Object.entries(slot.priceDetails)){
+      if (!p || p.market == null) continue;
+      const label = VARIANT_LABELS[key] || key;
+      rows += `<div class="priceBreakdown"><span>${escapeHtml(label)}</span><span>$${p.market.toFixed(2)}</span></div>`;
+    }
+  }
+  const mainPrice = slot.price != null ? `$${Number(slot.price).toFixed(2)}` : '—';
+  return `<div id="priceSectionWrapper" class="priceSection">
+    <div class="priceMain">TCGPlayer Market: <strong>${mainPrice}</strong></div>
+    ${rows}
+    <button id="refreshPriceBtn" class="secondary" style="margin-top:6px;font-size:12px;">&#8635; Refresh Price</button>
+  </div>`;
+}
+
 function openDetailPanel(pageIndex, slotIndex){
   activeSlotRef = { pageIndex, slotIndex };
   const slot = binderState.pages[pageIndex][slotIndex];
@@ -973,6 +1084,7 @@ function openDetailPanel(pageIndex, slotIndex){
         <textarea id="notesInput" rows="2">${escapeHtml(slot.notes || '')}</textarea>
       </div>
     </div>
+    ${buildPriceSectionHTML(slot)}
     <button class="primary" id="saveDetailBtn">Save</button>
     <button class="secondary" id="removeDetailBtn" style="background:#f3d4d4;">Remove from slot</button>
     <div class="closeRow"><button class="secondary" id="closeDetailBtn">Close</button></div>
@@ -983,6 +1095,19 @@ function openDetailPanel(pageIndex, slotIndex){
   document.getElementById('saveDetailBtn').addEventListener('click', saveDetail);
   document.getElementById('removeDetailBtn').addEventListener('click', removeSlot);
   document.getElementById('closeDetailBtn').addEventListener('click', hideOverlay);
+  document.getElementById('refreshPriceBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('refreshPriceBtn');
+    btn.disabled = true; btn.textContent = '…';
+    await fetchAndCachePrice(pageIndex, slotIndex);
+    // re-render price section in-place
+    const updated = binderState.pages[pageIndex][slotIndex];
+    document.getElementById('priceSectionWrapper').outerHTML = buildPriceSectionHTML(updated);
+    document.getElementById('refreshPriceBtn').addEventListener('click', async () => {
+      await fetchAndCachePrice(pageIndex, slotIndex);
+      const u2 = binderState.pages[pageIndex][slotIndex];
+      document.getElementById('priceSectionWrapper').outerHTML = buildPriceSectionHTML(u2);
+    });
+  });
 }
 
 function setOwnedToggle(owned){
