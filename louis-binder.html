@@ -379,6 +379,103 @@
   }
   #toast.show{ opacity:1; }
 
+  /* ---------- GALLERY VIEW ---------- */
+
+  /* Toggle button in the top bar */
+  #galleryBtn{
+    background:rgba(0,0,0,0.4); border:none; color:#eee;
+    border-radius:20px; padding:6px 12px; cursor:pointer; font-size:13px;
+    margin-right:6px; transition:background .15s;
+  }
+  #galleryBtn:hover{ background:rgba(0,0,0,0.6); }
+  /* Highlight button when gallery is active */
+  #galleryBtn.active{ background:var(--leather); }
+
+  /* Gallery container — sits behind the binder wrap; shown via .gallery-mode class */
+  #galleryView{
+    position:absolute; inset:0;
+    padding-top:52px; /* leave room for the fixed top bar */
+    display:none; flex-direction:column;
+    overflow:hidden;
+  }
+  /* Show gallery + hide binder when .gallery-mode is on #app */
+  #app.gallery-mode #galleryView{ display:flex; }
+  #app.gallery-mode #binderWrap{ display:none; }
+
+  /* Filter / sort / search toolbar */
+  #galleryControls{
+    display:flex; align-items:center; gap:7px; flex-wrap:wrap;
+    padding:8px 16px 8px;
+    background:rgba(0,0,0,0.25);
+    flex-shrink:0;
+  }
+  /* Pill-shaped filter chips: All / Owned / Missing */
+  .galleryFilterChip{
+    background:rgba(255,255,255,0.1); color:#ccc;
+    border:1.5px solid rgba(255,255,255,0.18); border-radius:16px;
+    padding:4px 12px; font-size:12px; cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  .galleryFilterChip.active{
+    background:var(--leather); color:#fff;
+    border-color:var(--leather);
+  }
+  /* Name search box */
+  #gallerySearch{
+    background:rgba(255,255,255,0.1); border:1.5px solid rgba(255,255,255,0.2);
+    color:#fff; border-radius:16px; padding:4px 12px; font-size:12px;
+    outline:none; min-width:130px;
+  }
+  #gallerySearch::placeholder{ color:rgba(255,255,255,0.35); }
+  /* Sort dropdown */
+  #gallerySortSelect{
+    background:rgba(255,255,255,0.1); border:1.5px solid rgba(255,255,255,0.2);
+    color:#ccc; border-radius:16px; padding:4px 10px; font-size:12px;
+    cursor:pointer; outline:none;
+  }
+  /* Card count label pushed to the right */
+  #galleryCount{ margin-left:auto; color:rgba(255,255,255,0.4); font-size:12px; }
+
+  /* Scrollable card grid */
+  #galleryGrid{
+    flex:1; overflow-y:auto;
+    display:grid;
+    /* auto-fill columns — wide screens get ~8 cards, mobile gets 3-4 */
+    grid-template-columns:repeat(auto-fill, minmax(110px,1fr));
+    gap:10px; padding:12px 16px;
+    align-content:start;
+  }
+  /* Individual card tile */
+  .galleryCard{
+    background:rgba(255,255,255,0.07);
+    border:1.5px solid rgba(255,255,255,0.12);
+    border-radius:8px; overflow:hidden; cursor:pointer;
+    transition:transform .15s, box-shadow .15s;
+  }
+  .galleryCard:hover{ transform:scale(1.04); box-shadow:0 6px 18px rgba(0,0,0,0.45); }
+  /* Dim the image for cards marked as missing */
+  .galleryCard.missing-card img{ filter:grayscale(0.9) brightness(0.7); opacity:0.7; }
+  .galleryCard img{ width:100%; aspect-ratio:2/3; object-fit:cover; display:block; }
+  /* Info strip below the card image */
+  .galleryCardInfo{ padding:4px 6px 5px; }
+  .galleryCardName{
+    font-size:10px; color:#ddd; font-weight:600;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px;
+  }
+  /* Row with status dot, page number, and price */
+  .galleryCardMeta{ display:flex; justify-content:space-between; align-items:center; gap:3px; }
+  .galleryCardPage{ font-size:9px; color:rgba(255,255,255,0.38); }
+  .galleryCardPrice{ font-size:10px; color:#ffe066; font-weight:700; }
+  /* Coloured dot matching owned/missing colour scheme */
+  .galleryCardStatus{ width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .galleryCardStatus.owned{ background:var(--owned); }
+  .galleryCardStatus.missing{ background:var(--missing); }
+  /* Empty state when no cards match the current filter */
+  .galleryEmpty{
+    grid-column:1/-1; text-align:center;
+    color:rgba(255,255,255,0.3); padding:40px; font-size:14px;
+  }
+
   /* ---------- PAGE CONTROLS ---------- */
   #pageControls{
     position:absolute; bottom:-62px; left:50%; transform:translateX(-50%);
@@ -483,7 +580,33 @@
       <span><span class="dot owned"></span><span id="ownedCount">0</span> owned</span>
       <span><span class="dot missing"></span><span id="missingCount">0</span> missing</span>
     </div>
-    <button id="settingsBtn">⚙ Settings</button>
+    <div style="display:flex;align-items:center;gap:0">
+      <button id="galleryBtn" title="Switch to gallery view">⊞ Gallery</button>
+      <button id="settingsBtn">⚙ Settings</button>
+    </div>
+  </div>
+
+  <!-- ============== GALLERY VIEW ============== -->
+  <!-- Hidden by default; shown when #app has class .gallery-mode -->
+  <div id="galleryView">
+    <div id="galleryControls">
+      <!-- Status filter chips -->
+      <button class="galleryFilterChip active" data-filter="all">All</button>
+      <button class="galleryFilterChip" data-filter="owned">Owned</button>
+      <button class="galleryFilterChip" data-filter="missing">Missing</button>
+      <!-- Name search -->
+      <input type="text" id="gallerySearch" placeholder="Search name…">
+      <!-- Sort order -->
+      <select id="gallerySortSelect">
+        <option value="page">Sort: Page order</option>
+        <option value="name">Sort: Name A–Z</option>
+        <option value="price">Sort: Price ↓</option>
+      </select>
+      <!-- Running count of visible cards -->
+      <span id="galleryCount"></span>
+    </div>
+    <!-- Card tiles injected here by renderGallery() -->
+    <div id="galleryGrid"></div>
   </div>
 
   <div id="binderWrap">
@@ -653,6 +776,7 @@ async function loadBinder(){
   renderAll();
   loadCorrections();
   initCoverImage();
+  initGallery(); // wire up gallery toggle + filter/sort/search controls
 }
 
 function normalizeLoaded(data){
@@ -763,10 +887,155 @@ function initCoverImage(){
   });
 }
 
+/* =====================================================================
+   GALLERY VIEW — flat scrollable grid of every card across all pages
+   Toggled by the ⊞ Gallery button in the top bar.
+   ===================================================================== */
+
+let galleryMode   = false;  // true = gallery visible, false = binder visible
+let galleryFilter = 'all';  // active status filter: 'all' | 'owned' | 'missing'
+let gallerySort   = 'page'; // active sort: 'page' | 'name' | 'price'
+let gallerySearch = '';     // current text in the name search box
+
+/* toggleGallery — flips between binder page view and gallery view.
+   Adding .gallery-mode to #app is what CSS uses to show/hide each section. */
+function toggleGallery(){
+  galleryMode = !galleryMode;
+  const app = document.getElementById('app');
+  const btn = document.getElementById('galleryBtn');
+
+  if (galleryMode){
+    app.classList.add('gallery-mode');
+    btn.classList.add('active');
+    btn.textContent = '⊟ Binder'; // label changes to show what clicking will go back to
+    renderGallery();
+  } else {
+    app.classList.remove('gallery-mode');
+    btn.classList.remove('active');
+    btn.textContent = '⊞ Gallery';
+    renderPage(currentSpread, null); // restore the binder page that was showing
+  }
+}
+
+/* renderGallery — collects every filled slot from all pages, applies the
+   active filter / search / sort, then stamps card tiles into #galleryGrid. */
+function renderGallery(){
+  // Collect all filled slots with their page + slot location
+  const all = [];
+  binderState.pages.forEach((page, pageIndex) => {
+    page.forEach((slot, slotIndex) => {
+      if (slot && slot.cardId){
+        all.push({ slot, pageIndex, slotIndex });
+      }
+    });
+  });
+
+  // Apply owned/missing filter
+  let visible = all.filter(({ slot }) => {
+    if (galleryFilter === 'owned')   return  slot.owned;
+    if (galleryFilter === 'missing') return !slot.owned;
+    return true; // 'all' — no filter
+  });
+
+  // Apply name search (case-insensitive substring match)
+  if (gallerySearch.trim()){
+    const q = gallerySearch.trim().toLowerCase();
+    visible = visible.filter(({ slot }) => slot.name.toLowerCase().includes(q));
+  }
+
+  // Sort results
+  visible.sort((a, b) => {
+    if (gallerySort === 'name')  return a.slot.name.localeCompare(b.slot.name);
+    if (gallerySort === 'price'){
+      // Cards with no price sort to the bottom
+      const pa = a.slot.price ?? -1;
+      const pb = b.slot.price ?? -1;
+      return pb - pa; // highest price first
+    }
+    // Default 'page': use the natural page × slot position
+    return (a.pageIndex * 9 + a.slotIndex) - (b.pageIndex * 9 + b.slotIndex);
+  });
+
+  // Update the count label
+  document.getElementById('galleryCount').textContent =
+    `${visible.length} card${visible.length !== 1 ? 's' : ''}`;
+
+  const grid = document.getElementById('galleryGrid');
+  grid.innerHTML = '';
+
+  // Show empty state when nothing matches
+  if (visible.length === 0){
+    const empty = document.createElement('div');
+    empty.className = 'galleryEmpty';
+    empty.textContent = 'No cards match your filter.';
+    grid.appendChild(empty);
+    return;
+  }
+
+  // Build one tile per card
+  visible.forEach(({ slot, pageIndex, slotIndex }) => {
+    const tile = document.createElement('div');
+    tile.className = 'galleryCard' + (slot.owned ? '' : ' missing-card');
+
+    const priceText   = slot.price != null ? `$${Number(slot.price).toFixed(2)}` : '—';
+    const statusClass = slot.owned ? 'owned' : 'missing';
+
+    // loading="lazy" defers off-screen images so the gallery opens fast
+    tile.innerHTML = `
+      <img src="${slot.image}" alt="${escapeHtml(slot.name)}" loading="lazy">
+      <div class="galleryCardInfo">
+        <div class="galleryCardName">${escapeHtml(slot.name)}</div>
+        <div class="galleryCardMeta">
+          <span class="galleryCardStatus ${statusClass}"></span>
+          <span class="galleryCardPage">Pg ${pageIndex + 1}</span>
+          <span class="galleryCardPrice">${priceText}</span>
+        </div>
+      </div>`;
+
+    // Clicking a tile reuses the existing detail panel — same as tapping in binder
+    tile.addEventListener('click', () => openDetailPanel(pageIndex, slotIndex));
+    grid.appendChild(tile);
+  });
+}
+
+/* initGallery — called once on startup to wire up the toggle button and
+   all the filter / sort / search controls in the gallery toolbar. */
+function initGallery(){
+  document.getElementById('galleryBtn').addEventListener('click', toggleGallery);
+
+  // Filter chips: clicking one activates it and deactivates the others
+  document.querySelectorAll('.galleryFilterChip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      galleryFilter = chip.dataset.filter;
+      document.querySelectorAll('.galleryFilterChip')
+        .forEach(c => c.classList.toggle('active', c === chip));
+      if (galleryMode) renderGallery();
+    });
+  });
+
+  // Sort dropdown
+  document.getElementById('gallerySortSelect').addEventListener('change', e => {
+    gallerySort = e.target.value;
+    if (galleryMode) renderGallery();
+  });
+
+  // Name search — debounced 200 ms so it doesn't re-render on every keystroke
+  let searchTimer;
+  document.getElementById('gallerySearch').addEventListener('input', e => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      gallerySearch = e.target.value;
+      if (galleryMode) renderGallery();
+    }, 200);
+  });
+}
+
 function renderAll(){
   renderPage(currentSpread, null);
   updateCounter();
   updateSummary();
+  // Keep gallery in sync whenever state changes (e.g. card added, detail saved)
+  if (galleryMode) renderGallery();
 }
 
 function updateCounter(){
