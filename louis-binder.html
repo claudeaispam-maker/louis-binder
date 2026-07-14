@@ -105,6 +105,34 @@
 
   #coverStage.hide{ display:none; }
 
+  #coverImg{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    object-fit:cover; object-position:center;
+    border-radius:4px;
+    z-index:1; display:none;
+  }
+  #cover.custom-cover #coverImg{ display:block; }
+  #cover.custom-cover::before{ display:none; }
+  #cover.custom-cover::after{
+    background: linear-gradient(to bottom, rgba(0,0,0,0.08) 0%, rgba(0,0,0,0.55) 100%);
+  }
+  #cover.custom-cover{ background:#111; }
+
+  #coverBtns{
+    position:absolute; bottom:14px; right:14px;
+    z-index:10; display:flex; gap:6px;
+    opacity:0; transition:opacity 0.2s;
+  }
+  #cover:hover #coverBtns{ opacity:1; }
+  #coverBtns button{
+    background:rgba(0,0,0,0.6); color:#fff;
+    border:1.5px solid rgba(255,255,255,0.3);
+    border-radius:16px; padding:5px 11px;
+    font-size:12px; cursor:pointer;
+  }
+  #coverBtns button:hover{ background:rgba(0,0,0,0.85); }
+
   /* ---------------- BINDER APP ---------------- */
   #app{
     position:fixed; inset:0; display:none;
@@ -429,8 +457,14 @@
 <body>
 
 <!-- ============== COVER ============== -->
+<input type="file" id="coverFileInput" accept="image/*" style="display:none">
 <div id="coverStage">
   <div id="cover">
+    <img id="coverImg" src="" alt="cover">
+    <div id="coverBtns">
+      <button id="coverChangeBtn">✏ Change Cover</button>
+      <button id="coverRemoveBtn" style="display:none">✕ Remove</button>
+    </div>
     <svg class="firemark" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
       <path d="M50 8 C40 22 30 30 30 46 C30 60 38 70 50 70 C62 70 70 60 70 46 C70 38 66 32 62 28 C63 38 58 42 53 40 C58 34 55 24 50 8 Z"
             fill="#ffe066" stroke="#7a1505" stroke-width="2"/>
@@ -548,6 +582,7 @@ try {
 let binderState = {
   apiKey: "",
   anthropicKey: "",
+  coverImage: null,
   pages: makeEmptyPages(PAGES_COUNT)
 };
 
@@ -601,6 +636,7 @@ async function loadBinder(){
         if (doc.exists){
           binderState = normalizeLoaded(doc.data());
           renderAll();
+          applyCoverImage(binderState.coverImage || null);
         }
       });
     }catch(e){
@@ -616,10 +652,11 @@ async function loadBinder(){
   hideLoading();
   renderAll();
   loadCorrections();
+  initCoverImage();
 }
 
 function normalizeLoaded(data){
-  const out = { apiKey: data.apiKey || "", anthropicKey: data.anthropicKey || "", pages: [] };
+  const out = { apiKey: data.apiKey || "", anthropicKey: data.anthropicKey || "", coverImage: data.coverImage || null, pages: [] };
   const pages = Array.isArray(data.pages) ? data.pages : [];
   // use saved page count (variable), fall back to default if none saved
   const count = pages.length || PAGES_COUNT;
@@ -669,6 +706,45 @@ document.getElementById('cover').addEventListener('click', () => {
    We render ONE page at a time inside #pageHolder using a flip animation
    between the outgoing and incoming page face.
 --------------------------------------------------------------------- */
+function applyCoverImage(dataUrl){
+  const cover = document.getElementById('cover');
+  const img = document.getElementById('coverImg');
+  const removeBtn = document.getElementById('coverRemoveBtn');
+  if (dataUrl){
+    img.src = dataUrl;
+    cover.classList.add('custom-cover');
+    removeBtn.style.display = '';
+  } else {
+    img.src = '';
+    cover.classList.remove('custom-cover');
+    removeBtn.style.display = 'none';
+  }
+}
+
+function initCoverImage(){
+  applyCoverImage(binderState.coverImage || null);
+
+  document.getElementById('coverChangeBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    document.getElementById('coverFileInput').click();
+  });
+  document.getElementById('coverRemoveBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    binderState.coverImage = null;
+    persist();
+    applyCoverImage(null);
+  });
+  document.getElementById('coverFileInput').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = await fileToDataUrl(file);
+    binderState.coverImage = url;
+    persist();
+    applyCoverImage(url);
+    e.target.value = '';
+  });
+}
+
 function renderAll(){
   renderPage(currentSpread, null);
   updateCounter();
