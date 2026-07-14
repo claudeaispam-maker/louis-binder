@@ -706,42 +706,60 @@ document.getElementById('cover').addEventListener('click', () => {
    We render ONE page at a time inside #pageHolder using a flip animation
    between the outgoing and incoming page face.
 --------------------------------------------------------------------- */
+/* applyCoverImage — swaps the binder cover between custom photo and the
+   default Charizard gradient. Toggling the "custom-cover" class lets CSS
+   handle showing/hiding #coverImg and restyling ::before / ::after. */
 function applyCoverImage(dataUrl){
-  const cover = document.getElementById('cover');
-  const img = document.getElementById('coverImg');
+  const cover    = document.getElementById('cover');
+  const img      = document.getElementById('coverImg');
   const removeBtn = document.getElementById('coverRemoveBtn');
+
   if (dataUrl){
+    // Set the photo, enable cover-image CSS mode, show Remove button
     img.src = dataUrl;
     cover.classList.add('custom-cover');
     removeBtn.style.display = '';
   } else {
+    // Clear photo, revert to gradient, hide Remove button
     img.src = '';
     cover.classList.remove('custom-cover');
     removeBtn.style.display = 'none';
   }
 }
 
+/* initCoverImage — called once on startup. Restores any saved cover image
+   from binderState and wires up the Change / Remove buttons and the hidden
+   file input that drives the image picker. */
 function initCoverImage(){
+  // Restore persisted cover photo on page load
   applyCoverImage(binderState.coverImage || null);
 
+  // "Change Cover" button: stopPropagation so the click doesn't also
+  // open the binder, then proxy to the hidden <input type="file">
   document.getElementById('coverChangeBtn').addEventListener('click', e => {
     e.stopPropagation();
     document.getElementById('coverFileInput').click();
   });
+
+  // "Remove" button: clears the saved image and reverts to gradient
   document.getElementById('coverRemoveBtn').addEventListener('click', e => {
     e.stopPropagation();
     binderState.coverImage = null;
     persist();
     applyCoverImage(null);
   });
+
+  // File picker: convert chosen image to a data URL, store it in state,
+  // then apply it live. Reset input value so the same file can be
+  // re-selected later (browser won't fire change otherwise).
   document.getElementById('coverFileInput').addEventListener('change', async e => {
     const file = e.target.files[0];
     if (!file) return;
-    const url = await fileToDataUrl(file);
+    const url = await fileToDataUrl(file); // reuses scan helper — reads file as base64 data URL
     binderState.coverImage = url;
     persist();
     applyCoverImage(url);
-    e.target.value = '';
+    e.target.value = ''; // reset so same file can trigger change again
   });
 }
 
@@ -845,46 +863,74 @@ function buildPocketEl(pageIndex, slotIndex, slot){
   return pocket;
 }
 
+/* getMarketPrice — picks the best single market price from the tcgplayer
+   prices object. Prefers holofoil variants first (usually the most
+   recognised value), then falls back through normal and older print types.
+   Returns null if the card has no TCGPlayer pricing at all. */
 function getMarketPrice(tcgplayer){
   if (!tcgplayer?.prices) return null;
+
+  // Priority order: holofoil variants tend to be the "main" price for
+  // most cards; normal comes after because base set normals exist too.
   const order = ['holofoil','reverseHolofoil','normal','1stEditionHolofoil','unlimitedHolofoil'];
   for (const key of order){
     const p = tcgplayer.prices[key];
     if (p?.market != null) return p.market;
   }
-  // fallback: first variant with any price
+
+  // Fallback: iterate whatever variants exist and take the first with a market price
   for (const p of Object.values(tcgplayer.prices)){
     if (p?.market != null) return p.market;
   }
   return null;
 }
 
+/* fetchAndCachePrice — fetches live TCGPlayer pricing for a single binder
+   slot via the Pokémon TCG API, then writes the result back into binderState
+   and updates the price badge in the DOM without re-rendering the whole page.
+   Called lazily when a page loads and a slot is missing its price. */
 async function fetchAndCachePrice(pageIndex, slotIndex){
   const slot = binderState.pages[pageIndex]?.[slotIndex];
-  if (!slot?.cardId) return;
+  if (!slot?.cardId) return; // nothing to fetch for an empty slot
+
+  // Grab the badge element now so we can update it after the fetch completes
   const badgeEl = document.getElementById(`pocket-${pageIndex}-${slotIndex}`)?.querySelector('.priceBadge');
+
   try {
     const apiKey = binderState.apiKey || '';
+    // API key is optional — unauthenticated requests still work but are rate-limited
     const headers = apiKey ? {'X-Api-Key': apiKey} : {};
+
     const res = await fetch(`https://api.pokemontcg.io/v2/cards/${encodeURIComponent(slot.cardId)}`, {headers});
     if (!res.ok) throw new Error(res.status);
+
     const {data} = await res.json();
+
+    // Store the resolved market price and full variant breakdown on the slot
     const price = getMarketPrice(data.tcgplayer);
-    slot.price = price;
-    slot.priceDetails = data.tcgplayer?.prices || null;
-    persist();
+    slot.price        = price;
+    slot.priceDetails = data.tcgplayer?.prices || null; // full breakdown used in detail panel
+
+    persist(); // save updated price to Firebase / localStorage
+
+    // Update the badge in the grid without rebuilding the whole page
     if (badgeEl){
       badgeEl.classList.remove('loading');
       badgeEl.textContent = price != null ? `$${price.toFixed(2)}` : '—';
     }
   } catch(e){
+    // On any error (network, 404, rate-limit) just show a dash — non-fatal
     if (badgeEl){ badgeEl.classList.remove('loading'); badgeEl.textContent = '—'; }
   }
 }
 
+/* triggerPriceFetches — called after a page renders. Loops every filled slot
+   on that page and kicks off a background price fetch for any slot that
+   doesn't already have a cached price. Fires are independent/parallel. */
 function triggerPriceFetches(pageIndex){
   const page = binderState.pages[pageIndex] || [];
   page.forEach((slot, slotIndex) => {
+    // Only fetch if slot has a card but hasn't been priced yet
     if (slot && slot.cardId && slot.price == null){
       fetchAndCachePrice(pageIndex, slotIndex);
     }
@@ -1113,21 +1159,34 @@ function placeCard(card){
 /* ---------------------------------------------------------------------
    DETAIL PANEL (owned toggle, qty, condition, notes, remove)
 --------------------------------------------------------------------- */
+/* buildPriceSectionHTML — generates the price block shown inside the card
+   detail panel. Displays the top-level market price plus a per-variant
+   breakdown (Holofoil, Reverse Holo, Normal, etc.) and a Refresh button.
+   Returns an HTML string; injected via showOverlay so it renders as part
+   of the overlay rather than being appended separately. */
 function buildPriceSectionHTML(slot){
+  // Human-readable labels for the API's camelCase variant keys
   const VARIANT_LABELS = {
     normal: 'Normal', holofoil: 'Holofoil',
     reverseHolofoil: 'Reverse Holo', '1stEditionHolofoil': '1st Ed Holo',
     unlimitedHolofoil: 'Unlimited Holo'
   };
+
+  // Build one row per variant that has a market price
   let rows = '';
   if (slot.priceDetails){
     for (const [key, p] of Object.entries(slot.priceDetails)){
-      if (!p || p.market == null) continue;
-      const label = VARIANT_LABELS[key] || key;
+      if (!p || p.market == null) continue; // skip variants with no market data
+      const label = VARIANT_LABELS[key] || key; // fall back to raw key if unknown variant
       rows += `<div class="priceBreakdown"><span>${escapeHtml(label)}</span><span>$${p.market.toFixed(2)}</span></div>`;
     }
   }
+
+  // Show dash if price hasn't been fetched yet
   const mainPrice = slot.price != null ? `$${Number(slot.price).toFixed(2)}` : '—';
+
+  // Wrapper id="priceSectionWrapper" lets the Refresh button replace this
+  // block in-place after re-fetching, without re-rendering the whole panel
   return `<div id="priceSectionWrapper" class="priceSection">
     <div class="priceMain">TCGPlayer Market: <strong>${mainPrice}</strong></div>
     ${rows}
