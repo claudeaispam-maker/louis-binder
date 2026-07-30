@@ -493,6 +493,39 @@
   .pageCtrlBtn.remove{ background:rgba(220,60,60,0.25); border-color:rgba(220,60,60,0.4); color:#ffb3b3; }
   .pageCtrlBtn.remove:hover:not(:disabled){ background:rgba(220,60,60,0.45); }
 
+  /* ---------- FOG REVEAL ---------- */
+
+  /* Canvas layer that sits on top of a filled card pocket.
+     touch-action:none prevents the browser from stealing touch events
+     (which would break wipe gestures on mobile). */
+  .fogCanvas{
+    position:absolute; inset:0;
+    width:100%; height:100%;
+    border-radius:6px;
+    cursor:crosshair;
+    touch-action:none;
+    z-index:5; /* above qty badge, price badge, owned dot */
+  }
+
+  /* Fog toggle button in the top bar */
+  #fogBtn{
+    background:rgba(0,0,0,0.4); border:none; color:#eee;
+    border-radius:20px; padding:6px 12px; cursor:pointer; font-size:13px;
+    margin-right:6px; transition:background .15s;
+  }
+  #fogBtn:hover{ background:rgba(0,0,0,0.6); }
+  /* Cool blue tint when fog mode is on */
+  #fogBtn.active{ background:rgba(70,120,185,0.65); color:#dff0ff; }
+
+  /* "Reset" button — re-fogs all revealed cards on the current page;
+     only visible while fog mode is active */
+  #resetFogBtn{
+    background:rgba(60,95,150,0.3); border:1.5px solid rgba(100,155,220,0.4);
+    color:#a8caef; border-radius:20px; padding:6px 12px;
+    cursor:pointer; font-size:12px; margin-right:6px; display:none;
+  }
+  #resetFogBtn:hover{ background:rgba(60,95,150,0.55); }
+
   /* ---------- SCAN FEATURE ---------- */
   .pageHeader{
     display:flex; align-items:center; justify-content:center; gap:8px;
@@ -581,6 +614,8 @@
       <span><span class="dot missing"></span><span id="missingCount">0</span> missing</span>
     </div>
     <div style="display:flex;align-items:center;gap:0">
+      <button id="fogBtn" title="Toggle fog reveal mode">🌫 Fog</button>
+      <button id="resetFogBtn" title="Re-apply fog to all cards on this page">↺ Reset</button>
       <button id="galleryBtn" title="Switch to gallery view">⊞ Gallery</button>
       <button id="settingsBtn">⚙ Settings</button>
     </div>
@@ -776,6 +811,7 @@ async function loadBinder(){
   renderAll();
   loadCorrections();
   initCoverImage();
+  initFogControls(); // wire up fog toggle + reset buttons
   initGallery(); // wire up gallery toggle + filter/sort/search controls
 }
 
@@ -998,6 +1034,169 @@ function renderGallery(){
   });
 }
 
+/* =====================================================================
+   FOG REVEAL MODE
+   Cards are covered by a frosted-glass canvas overlay. Dragging over
+   a card erases the fog pixels (destination-out compositing) to reveal
+   the card underneath — like wiping condensation off a window.
+   Fog resets on every page navigation since the DOM is rebuilt.
+   ===================================================================== */
+
+let fogMode = false; // true = fog canvases are added to all filled pockets
+
+/* drawFog — paints a layered frost effect onto a canvas element.
+   Combines a solid blue-grey base, a dark vignette, random frost
+   specks, and soft cloudy blobs for a convincing condensation look. */
+function drawFog(canvas){
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+
+  // Solid semi-opaque base — cool blue-grey like real condensation on glass
+  ctx.fillStyle = 'rgba(185,208,228,0.97)';
+  ctx.fillRect(0, 0, w, h);
+
+  // Radial vignette — lighter centre, darker edges for depth
+  const vig = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w,h) * 0.72);
+  vig.addColorStop(0, 'rgba(225,240,252,0)');
+  vig.addColorStop(1, 'rgba(90,125,158,0.52)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, w, h);
+
+  // Fine frost specks — hundreds of tiny white dots give a crystalline texture
+  for (let i = 0; i < 520; i++){
+    const x = Math.random() * w;
+    const y = Math.random() * h;
+    ctx.beginPath();
+    ctx.arc(x, y, Math.random() * 2.2 + 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${(Math.random() * 0.18 + 0.04).toFixed(2)})`;
+    ctx.fill();
+  }
+
+  // Soft cloudy blobs — larger diffuse spots break up the uniformity
+  for (let i = 0; i < 14; i++){
+    const x = Math.random() * w, y = Math.random() * h;
+    const r = Math.random() * 22 + 8;
+    const blob = ctx.createRadialGradient(x, y, 0, x, y, r);
+    blob.addColorStop(0, 'rgba(255,255,255,0.13)');
+    blob.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = blob;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+}
+
+/* attachWipeListeners — wires mouse + touch events to a fog canvas so
+   the user can drag to erase fog (like wiping a window) or tap to open
+   the detail panel. A short tap (< 4 px movement) is treated as a click. */
+function attachWipeListeners(canvas){
+  const pageIndex = parseInt(canvas.dataset.pageIdx);
+  const slotIndex = parseInt(canvas.dataset.slotIdx);
+
+  // Convert browser client coords → canvas pixel coords
+  // (needed because CSS scales the canvas element but pixel dimensions are fixed)
+  const toCanvas = (clientX, clientY) => {
+    const r = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - r.left) * (canvas.width  / r.width),
+      y: (clientY - r.top)  * (canvas.height / r.height)
+    };
+  };
+
+  // Soft radial eraser — hard at centre, fades to transparent at edge
+  // so wipe strokes blend naturally rather than leaving hard circles
+  const erase = (x, y) => {
+    const ctx = canvas.getContext('2d');
+    const R   = Math.max(canvas.width, canvas.height) * 0.23; // brush ~23% of card size
+    ctx.globalCompositeOperation = 'destination-out'; // erases canvas pixels
+    const g = ctx.createRadialGradient(x, y, 0, x, y, R);
+    g.addColorStop(0,    'rgba(0,0,0,1)');
+    g.addColorStop(0.55, 'rgba(0,0,0,0.85)');
+    g.addColorStop(1,    'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over'; // always restore default mode
+  };
+
+  let moved = false, startX = 0, startY = 0;
+
+  // Mouse
+  canvas.addEventListener('mousedown', e => {
+    moved = false; startX = e.clientX; startY = e.clientY;
+    erase(...Object.values(toCanvas(e.clientX, e.clientY)));
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!e.buttons) return;
+    // Mark as a drag once the cursor moves more than 4 px from start
+    if (Math.hypot(e.clientX - startX, e.clientY - startY) > 4) moved = true;
+    erase(...Object.values(toCanvas(e.clientX, e.clientY)));
+  });
+  canvas.addEventListener('mouseup', () => {
+    // Tap (not drag) → open detail panel as if the pocket was clicked normally
+    if (!moved) openDetailPanel(pageIndex, slotIndex);
+    moved = false;
+  });
+
+  // Touch (passive:false lets us call e.preventDefault() to block scroll)
+  canvas.addEventListener('touchstart', e => {
+    e.preventDefault();
+    moved = false;
+    const t = e.touches[0]; startX = t.clientX; startY = t.clientY;
+    erase(...Object.values(toCanvas(t.clientX, t.clientY)));
+  }, {passive: false});
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    moved = true;
+    const t = e.touches[0];
+    erase(...Object.values(toCanvas(t.clientX, t.clientY)));
+  }, {passive: false});
+  canvas.addEventListener('touchend', () => {
+    if (!moved) openDetailPanel(pageIndex, slotIndex);
+    moved = false;
+  });
+}
+
+/* initFogCanvases — called via setTimeout after a page face is inserted into
+   the DOM, so CSS layout has settled and offsetWidth/Height are correct.
+   Sizes every fog canvas in pixels, draws the initial frost, then wires wipes. */
+function initFogCanvases(face){
+  face.querySelectorAll('.fogCanvas').forEach(canvas => {
+    const pocket  = canvas.parentElement;
+    canvas.width  = pocket.offsetWidth  || 100;
+    canvas.height = pocket.offsetHeight || 140;
+    drawFog(canvas);
+    attachWipeListeners(canvas);
+  });
+}
+
+/* toggleFogMode — flips fog on/off. Re-renders the current page so that
+   buildPocketEl knows whether to add fog canvases. */
+function toggleFogMode(){
+  fogMode = !fogMode;
+  const btn      = document.getElementById('fogBtn');
+  const resetBtn = document.getElementById('resetFogBtn');
+  btn.classList.toggle('active', fogMode);
+  btn.textContent        = fogMode ? '🌫 Fog On' : '🌫 Fog';
+  resetBtn.style.display = fogMode ? ''         : 'none';
+  renderPage(currentSpread, null); // rebuild so pockets gain/lose fog overlay
+}
+
+/* resetFog — redraws fresh fog on every visible canvas, re-hiding any cards
+   the user has already wiped. Does not affect fog-off mode. */
+function resetFog(){
+  document.querySelectorAll('.fogCanvas').forEach(canvas => {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawFog(canvas); // paint fresh frost over the cleared area
+  });
+}
+
+/* initFogControls — wires the Fog and Reset buttons once on startup. */
+function initFogControls(){
+  document.getElementById('fogBtn').addEventListener('click', toggleFogMode);
+  document.getElementById('resetFogBtn').addEventListener('click', resetFog);
+}
+
 /* initGallery — called once on startup to wire up the toggle button and
    all the filter / sort / search controls in the gallery toolbar. */
 function initGallery(){
@@ -1086,8 +1285,11 @@ function buildPageFaceEl(pageIndex){
   }
   face.appendChild(header);
   face.appendChild(grid);
-  // lazy-fetch prices for any filled slot missing a price
-  setTimeout(() => triggerPriceFetches(pageIndex), 50);
+  // After layout settles: fetch missing prices + size/draw any fog canvases
+  setTimeout(() => {
+    triggerPriceFetches(pageIndex);
+    if (fogMode) initFogCanvases(face); // must run after layout so offsetWidth is non-zero
+  }, 50);
   return face;
 }
 
@@ -1123,6 +1325,16 @@ function buildPocketEl(pageIndex, slotIndex, slot){
       priceBadge.textContent = '…';
     }
     pocket.appendChild(priceBadge);
+
+    // Fog canvas — added on top when fog mode is active; sized + drawn later
+    // in initFogCanvases() once the element is in the DOM and has real dimensions
+    if (fogMode){
+      const fog = document.createElement('canvas');
+      fog.className = 'fogCanvas';
+      fog.dataset.pageIdx = pageIndex;
+      fog.dataset.slotIdx = slotIndex;
+      pocket.appendChild(fog);
+    }
   } else {
     const plus = document.createElement('div');
     plus.className = 'plus';
