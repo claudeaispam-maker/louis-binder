@@ -2200,11 +2200,120 @@ function commitScan(pageIndex){
 }
 
 /* ---------------------------------------------------------------------
+   SHARE FEATURE — compresses binder state into a URL fragment and opens
+   a read-only viewer page (binder-share.html) that anyone can access.
+   No login or Firebase required on the recipient's side.
+--------------------------------------------------------------------- */
+
+/* compressAndEncode — serialises an object to JSON, gzip-compresses it
+   using the Web Streams CompressionStream API, then base64-encodes the
+   result so it can be embedded in a URL hash fragment. */
+async function compressAndEncode(obj){
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  const stream = new CompressionStream('gzip');
+  const writer = stream.writable.getWriter();
+  writer.write(bytes);
+  writer.close();
+  const buf    = await new Response(stream.readable).arrayBuffer();
+  const arr    = new Uint8Array(buf);
+  let binary   = '';
+  arr.forEach(b => binary += String.fromCharCode(b));
+  return btoa(binary);
+}
+
+/* buildSharePayload — strips private data (API keys, verbose priceDetails)
+   from binderState and returns a clean object safe to embed in a public URL.
+   coverImage is included only when it's a URL or a small enough base64 string
+   (> 200 000 chars would make the URL too long on most platforms). */
+function buildSharePayload(){
+  const cover = binderState.coverImage;
+  return {
+    v:          1,
+    title:      "Loui's Binder",
+    coverImage: (!cover || cover.length > 200000) ? null : cover,
+    sharedAt:   new Date().toISOString(),
+    pages: binderState.pages.map(page =>
+      page.map(slot => slot ? {
+        name:      slot.name,
+        image:     slot.image,
+        set:       slot.set      || '',
+        owned:     slot.owned,
+        quantity:  slot.quantity || 1,
+        condition: slot.condition || '',
+        price:     slot.price    ?? null
+        // stripped: cardId, notes, priceDetails, apiKey, anthropicKey
+      } : null)
+    )
+  };
+}
+
+/* shareCollection — builds the share URL and hands off to showSharePanel. */
+async function shareCollection(){
+  const btn = document.getElementById('generateShareBtn');
+  if (btn){ btn.disabled = true; btn.textContent = 'Generating…'; }
+  try {
+    const encoded  = await compressAndEncode(buildSharePayload());
+    // binder-share.html lives in the same GitHub Pages repo
+    const base     = 'https://claudeaispam-maker.github.io/louis-binder/binder-share.html';
+    const url      = `${base}#${encoded}`;
+    showSharePanel(url);
+  } catch(e){
+    if (btn){ btn.disabled = false; btn.textContent = 'Generate Share Link'; }
+    toast('Could not generate link: ' + (e.message || e));
+  }
+}
+
+/* showSharePanel — replaces the overlay content with the finished link
+   and auto-copies it to the clipboard. */
+function showSharePanel(url){
+  const total = binderState.pages.reduce((n,p) => n + p.filter(Boolean).length, 0);
+  const pages = binderState.pages.length;
+  showOverlay(`
+    <h2>🔗 Share Binder</h2>
+    <p style="font-size:13px;color:#555;margin:0 0 12px 0;">
+      Anyone with this link can view your full collection — read only, no login needed.
+    </p>
+    <div style="display:flex;gap:6px;align-items:stretch;">
+      <input type="text" id="shareUrlInput" value="${escapeHtml(url)}" readonly
+        style="flex:1;font-size:11px;padding:8px 10px;border:1px solid #ccc;
+               border-radius:6px;background:#f5f5f5;color:#333;outline:none;">
+      <button class="primary" id="copyShareBtn" style="white-space:nowrap;flex-shrink:0;">
+        Copy Link
+      </button>
+    </div>
+    <p style="font-size:11px;color:#aaa;margin:8px 0 0 0;">
+      Includes ${total} card${total!==1?'s':''} across ${pages} page${pages!==1?'s':''}.
+    </p>
+    <div class="closeRow"><button class="secondary" id="closeShareBtn">Close</button></div>
+  `);
+  const copyBtn = document.getElementById('copyShareBtn');
+  const copyUrl = () => {
+    navigator.clipboard.writeText(url).then(() => {
+      copyBtn.textContent = '✓ Copied!';
+      setTimeout(() => { if(copyBtn.isConnected) copyBtn.textContent = 'Copy Link'; }, 2000);
+    }).catch(() => {
+      // Fallback for browsers that block clipboard without user gesture
+      document.getElementById('shareUrlInput').select();
+    });
+  };
+  copyBtn.addEventListener('click', copyUrl);
+  copyUrl(); // auto-copy immediately when the panel opens
+  document.getElementById('closeShareBtn').addEventListener('click', hideOverlay);
+}
+
+/* ---------------------------------------------------------------------
    SETTINGS PANEL (API key)
 --------------------------------------------------------------------- */
 document.getElementById('settingsBtn').addEventListener('click', () => {
   showOverlay(`
     <h2>Settings</h2>
+    <div style="background:#eef5ff;border:1px solid #c0d8f5;border-radius:8px;padding:12px;margin-bottom:14px;">
+      <div style="font-weight:700;color:#2a5a8c;margin-bottom:4px;">🔗 Share Binder</div>
+      <p style="font-size:12px;color:#555;margin:0 0 8px 0;">
+        Generate a link anyone can open to view your full collection — read only, no login needed.
+      </p>
+      <button class="primary" id="generateShareBtn" style="width:100%;">Generate Share Link</button>
+    </div>
     <label style="font-size:12px;color:#555;">Pokémon TCG API key (optional — raises search rate limit)</label>
     <input type="text" id="apiKeyInput" placeholder="Paste TCG API key here" value="${escapeHtml(binderState.apiKey || '')}">
     <p style="font-size:12px;color:#888;margin-top:4px;">
@@ -2223,6 +2332,7 @@ document.getElementById('settingsBtn').addEventListener('click', () => {
     <button class="primary" id="saveSettingsBtn">Save</button>
     <div class="closeRow"><button class="secondary" id="closeSettingsBtn">Close</button></div>
   `);
+  document.getElementById('generateShareBtn').addEventListener('click', shareCollection);
   document.getElementById('saveSettingsBtn').addEventListener('click', () => {
     binderState.apiKey = document.getElementById('apiKeyInput').value.trim();
     binderState.anthropicKey = document.getElementById('anthropicKeyInput').value.trim();
