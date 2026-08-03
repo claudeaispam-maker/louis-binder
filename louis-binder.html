@@ -1660,8 +1660,7 @@ function toast(msg){
    SEARCH PANEL (Pokémon TCG API)
 --------------------------------------------------------------------- */
 /* openSlotOptions — shown when tapping an empty slot.
-   Two clear paths: scan/upload a photo, or search by name.
-   Scan goes directly into this slot — no slot picker needed. */
+   Three paths: scan/upload via API, search by name via API, or add a fully custom card with no API at all. */
 function openSlotOptions(pageIndex, slotIndex){
   const hasScanKey = !!binderState.anthropicKey;
   const slotLabel = slotIndex + 1;
@@ -1669,11 +1668,14 @@ function openSlotOptions(pageIndex, slotIndex){
     <h2 style="margin-bottom:4px;">Slot ${slotLabel} — Add a card</h2>
     <p style="font-size:12px;color:#888;margin:0 0 14px;">Page ${pageIndex + 1} · slot ${slotLabel} of 9</p>
     ${hasScanKey ? `
-    <button class="primary" id="scanSlotBtn" style="width:100%;padding:14px;font-size:15px;margin-bottom:10px;">
+    <button class="primary" id="scanSlotBtn" style="width:100%;padding:13px;font-size:14px;margin-bottom:8px;">
       📷 Upload or Scan Card
     </button>` : ''}
-    <button class="secondary" id="searchSlotBtn" style="width:100%;padding:12px;font-size:14px;">
+    <button class="secondary" id="searchSlotBtn" style="width:100%;padding:11px;font-size:14px;margin-bottom:8px;">
       🔍 Search by card name
+    </button>
+    <button class="secondary" id="customSlotBtn" style="width:100%;padding:11px;font-size:14px;">
+      ✏️ Add Custom Card (no API needed)
     </button>
     <div class="closeRow" style="margin-top:12px;">
       <button class="secondary" id="slotOptsCancelBtn">Cancel</button>
@@ -1681,13 +1683,79 @@ function openSlotOptions(pageIndex, slotIndex){
   `);
   document.getElementById('slotOptsCancelBtn').addEventListener('click', hideOverlay);
   document.getElementById('searchSlotBtn').addEventListener('click', () => openSearchPanel(pageIndex, slotIndex));
+  document.getElementById('customSlotBtn').addEventListener('click', () => openCustomCardPanel(pageIndex, slotIndex));
   if (hasScanKey){
     document.getElementById('scanSlotBtn').addEventListener('click', () => {
       hideOverlay();
-      // Scan directly into this slot — no slot picker
       openSingleCardScan(pageIndex, slotIndex);
     });
   }
+}
+
+/* openCustomCardPanel — lets the user enter a card name, set, and upload their own image.
+   No API calls at all — useful for custom, fan-made, or unlisted cards. */
+function openCustomCardPanel(pageIndex, slotIndex){
+  showOverlay(`
+    <h2 style="margin-bottom:8px;">✏️ Custom Card — Slot ${slotIndex + 1}</h2>
+    <label style="font-size:12px;color:#555;">Card Name <span style="color:#c55;">*</span></label>
+    <input type="text" id="customName" placeholder="e.g. Shadow Charizard" autocorrect="off" style="margin-bottom:8px;">
+    <label style="font-size:12px;color:#555;">Set / Series (optional)</label>
+    <input type="text" id="customSet" placeholder="e.g. Fan Set, Custom 2024" autocorrect="off" style="margin-bottom:8px;">
+    <label style="font-size:12px;color:#555;">Card Image (optional)</label>
+    <button class="secondary" id="customImgBtn" style="width:100%;margin-bottom:4px;">📁 Choose Image</button>
+    <div id="customImgPreview" style="text-align:center;margin-bottom:8px;"></div>
+    <button class="primary" id="customSaveBtn" style="width:100%;margin-top:4px;">Save to Slot</button>
+    <div class="closeRow" style="margin-top:8px;">
+      <button class="secondary" id="customCancelBtn">← Back</button>
+    </div>
+  `);
+
+  let customImageDataUrl = null; // holds the uploaded image as a data URL
+
+  document.getElementById('customCancelBtn').addEventListener('click', () => openSlotOptions(pageIndex, slotIndex));
+
+  // Image picker — reuse the scan file input but intercept it for custom image mode
+  document.getElementById('customImgBtn').addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = 'image/*';
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+    inp.addEventListener('change', async () => {
+      const file = inp.files[0];
+      if (!file){ document.body.removeChild(inp); return; }
+      customImageDataUrl = await fileToDataUrl(file);
+      // Show a small preview of the chosen image
+      document.getElementById('customImgPreview').innerHTML =
+        `<img src="${customImageDataUrl}" style="max-height:120px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">`;
+      document.getElementById('customImgBtn').textContent = '📁 Change Image';
+      document.body.removeChild(inp);
+    });
+    inp.click();
+  });
+
+  document.getElementById('customSaveBtn').addEventListener('click', () => {
+    const name = document.getElementById('customName').value.trim();
+    if (!name){ toast('Enter a card name.'); return; }
+    const set  = document.getElementById('customSet').value.trim();
+
+    // Save the custom card directly — no API, no image fetch needed
+    binderState.pages[pageIndex][slotIndex] = {
+      cardId: '',
+      name,
+      image: customImageDataUrl || '',  // use uploaded image or leave blank
+      set,
+      owned: true,
+      quantity: 1,
+      condition: 'Near Mint',
+      notes: 'Custom card'
+    };
+    persist();
+    renderPage(currentSpread, null);
+    updateSummary();
+    hideOverlay();
+    toast(`${name} added to slot ${slotIndex + 1}.`);
+  });
 }
 
 /* openSearchPanel — search the TCG API by card name and place result in a slot.
