@@ -2223,15 +2223,17 @@ async function identifySingleCard(imageDataUrl, apiKey){
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-          { type: 'text', text: `This is a photo of a Pokémon TCG card. Read it carefully.
+          { type: 'text', text: `This is a photo of a Pokémon TCG card. Read these four things carefully:
 
-IMPORTANT: Read the card number printed in the bottom-right corner (e.g. "61/132", "4/102", "SWSH001").
-Also read the FULL card name including any trainer prefix (e.g. "Blaine's Charmander", not just "Charmander").
+1. FULL CARD NAME — include any trainer prefix (e.g. "Blaine's Charmander", NOT just "Charmander")
+2. CARD NUMBER — printed bottom-right corner (e.g. "61/132", "4/102", "SWSH001")
+3. SET NAME — the set name printed on the card or identifiable from the set symbol (e.g. "Gym Challenge", "Base Set", "Scarlet & Violet")
+4. RARITY — the symbol at the bottom (circle=Common, diamond=Uncommon, star=Rare, star-H=Holo Rare)
 
 Respond ONLY with valid JSON — no other text:
-{"name":"Blaine's Charmander","set":"Gym Challenge","number":"61/132","confidence":"high"}
+{"name":"Blaine's Charmander","set":"Gym Challenge","number":"61/132","rarity":"Common","confidence":"high"}
 
-If unreadable: {"name":"unknown","set":"","number":"","confidence":"low"}` }
+If unreadable: {"name":"unknown","set":"","number":"","rarity":"","confidence":"low"}` }
         ]
       }]
     })
@@ -2390,37 +2392,53 @@ async function searchTCGForCard(name, set, number){
 
     // Extract just the number before the slash — "61/132" → "61", "SWSH001" stays as-is
     const numOnly = number ? number.toString().split('/')[0].trim() : '';
+    // Shorten set name to first 3 meaningful words for fuzzy matching (handles subtitle variations)
+    const setShort = set ? set.toLowerCase().split(' ').slice(0, 3).join(' ') : '';
 
-    // --- Pass 1: exact name + card number (pinpoints the specific printing) ---
-    if (numOnly){
-      const q1 = `name:"${name}" number:${numOnly}`;
+    // --- Pass 1: exact name + number + set (most precise — all three identifiers) ---
+    if (numOnly && set){
+      const q1 = `name:"${name}" number:${numOnly} set.name:"${set}"`;
       const r1 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q1)}&pageSize=4`, { headers });
       const d1 = await r1.json();
       if (d1.data?.length) return d1.data[0];
     }
 
-    // --- Pass 2: partial name + card number (handles apostrophes/special chars in API) ---
+    // --- Pass 2: exact name + number (apostrophes in set name may trip up API) ---
     if (numOnly){
-      // Use first significant word of name to avoid quote-escaping issues
-      const firstName = name.split(' ').pop(); // e.g. "Charmander" from "Blaine's Charmander"
-      const q2 = `name:${encodeURIComponent(firstName)}* number:${numOnly}`;
-      const r2 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q2)}&pageSize=6`, { headers });
+      const q2 = `name:"${name}" number:${numOnly}`;
+      const r2 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q2)}&pageSize=4`, { headers });
       const d2 = await r2.json();
-      if (d2.data?.length){
-        // Prefer the card whose full name matches most closely
-        const exact = d2.data.find(c => c.name.toLowerCase() === name.toLowerCase());
-        return exact || d2.data[0];
+      if (d2.data?.length) return d2.data[0];
+    }
+
+    // --- Pass 3: last word of name + number (handles apostrophes in card names like "Blaine's") ---
+    if (numOnly){
+      const lastName = name.split(' ').pop();
+      const q3 = `name:${encodeURIComponent(lastName)}* number:${numOnly}`;
+      const r3 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q3)}&pageSize=8`, { headers });
+      const d3 = await r3.json();
+      if (d3.data?.length){
+        const exact = d3.data.find(c => c.name.toLowerCase() === name.toLowerCase());
+        return exact || d3.data[0];
       }
     }
 
-    // --- Pass 3: name + set (fallback when number isn't readable) ---
-    const q3 = `name:${encodeURIComponent(name)}*`;
-    const r3 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q3)}&pageSize=12`, { headers });
-    const d3 = await r3.json();
-    const cards = d3.data || [];
-    if (!cards.length) return null;
+    // --- Pass 4: name + set name (fallback when card number isn't readable) ---
     if (set){
-      const hit = cards.find(c => c.set?.name?.toLowerCase().includes(set.toLowerCase().slice(0, 6)));
+      const q4 = `name:${encodeURIComponent(name)}* set.name:"${set}"`;
+      const r4 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q4)}&pageSize=6`, { headers });
+      const d4 = await r4.json();
+      if (d4.data?.length) return d4.data[0];
+    }
+
+    // --- Pass 5: name only, use set to pick best match from results ---
+    const q5 = `name:${encodeURIComponent(name)}*`;
+    const r5 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q5)}&pageSize=16`, { headers });
+    const d5 = await r5.json();
+    const cards = d5.data || [];
+    if (!cards.length) return null;
+    if (setShort){
+      const hit = cards.find(c => c.set?.name?.toLowerCase().includes(setShort));
       if (hit) return hit;
     }
     return cards[0];
