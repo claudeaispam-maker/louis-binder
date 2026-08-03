@@ -1925,6 +1925,7 @@ function openDetailPanel(pageIndex, slotIndex){
     </div>
     ${buildPriceSectionHTML(slot)}
     <button class="primary" id="saveDetailBtn">Save</button>
+    <button class="secondary" id="moveCardBtn">↕ Move / Swap</button>
     <button class="secondary" id="removeDetailBtn" style="background:#f3d4d4;">Remove from slot</button>
     <div class="closeRow"><button class="secondary" id="closeDetailBtn">Close</button></div>
   `);
@@ -1932,6 +1933,7 @@ function openDetailPanel(pageIndex, slotIndex){
   document.getElementById('ownedBtn').addEventListener('click', () => setOwnedToggle(true));
   document.getElementById('missingBtn').addEventListener('click', () => setOwnedToggle(false));
   document.getElementById('saveDetailBtn').addEventListener('click', saveDetail);
+  document.getElementById('moveCardBtn').addEventListener('click', () => openMovePanel(pageIndex, slotIndex));
   document.getElementById('removeDetailBtn').addEventListener('click', removeSlot);
   document.getElementById('closeDetailBtn').addEventListener('click', hideOverlay);
   document.getElementById('refreshPriceBtn').addEventListener('click', async () => {
@@ -1980,6 +1982,118 @@ function removeSlot(){
   renderPage(currentSpread, null);
   updateSummary();
   toast('Removed from binder.');
+}
+
+/* ---------------------------------------------------------------------
+   MOVE / SWAP — lets the user relocate a card to any slot on any page.
+   Shows a visual 3×3 grid of the target page.
+   - Tapping an EMPTY slot moves the card there (origin becomes empty).
+   - Tapping a FILLED slot swaps the two cards.
+   Prev/Next buttons navigate across pages without closing the panel.
+--------------------------------------------------------------------- */
+function openMovePanel(fromPage, fromSlot, viewPage){
+  // viewPage: which page's grid is currently displayed (defaults to fromPage)
+  if (viewPage === undefined) viewPage = fromPage;
+  const card = binderState.pages[fromPage][fromSlot];
+  if (!card) return;
+  const page = binderState.pages[viewPage];
+  const totalPages = binderState.pages.length;
+
+  // Build the 3×3 grid cells for the viewed page
+  let cellsHtml = '';
+  for (let i = 0; i < 9; i++){
+    const existing = page[i];
+    const isSelf = (viewPage === fromPage && i === fromSlot); // this is the card being moved
+    const label = i + 1;
+    if (isSelf){
+      // Highlight the card's current position
+      cellsHtml += `
+        <div class="slotPickerCell" style="border-color:#f90;background:#fff8e0;cursor:default;" title="Current position">
+          <span class="slotPickerNum">${label}</span>
+          ${card.image ? `<img src="${card.image}" alt="${escapeHtml(card.name)}" style="opacity:.5;">` : ''}
+          <span style="font-size:9px;color:#f90;margin-top:2px;">here</span>
+        </div>`;
+    } else if (existing){
+      // Filled slot — tapping swaps the two cards
+      cellsHtml += `
+        <div class="slotPickerCell filled" data-action="swap" data-topage="${viewPage}" data-toslot="${i}"
+             style="cursor:pointer;opacity:1;border-color:#8ab4f8;"
+             title="Swap with: ${escapeHtml(existing.name)}">
+          <span class="slotPickerNum">${label}</span>
+          ${existing.image ? `<img src="${existing.image}" alt="${escapeHtml(existing.name)}">` : ''}
+          <span style="position:absolute;bottom:3px;left:0;right:0;text-align:center;font-size:8px;color:#fff;background:rgba(0,0,0,.45);padding:1px 0;">swap</span>
+        </div>`;
+    } else {
+      // Empty slot — tapping moves the card here
+      cellsHtml += `
+        <div class="slotPickerCell empty" data-action="move" data-topage="${viewPage}" data-toslot="${i}"
+             title="Move to slot ${label}">
+          <span class="slotPickerNum">${label}</span>
+          <span style="font-size:18px;margin-top:4px;">+</span>
+          <span style="font-size:10px;margin-top:2px;">move here</span>
+        </div>`;
+    }
+  }
+
+  showOverlay(`
+    <h2 style="margin-bottom:4px;">↕ Move / Swap</h2>
+    <div class="slotPickerCard" style="margin-bottom:10px;">
+      ${card.image ? `<img src="${card.image}" alt="${escapeHtml(card.name)}">` : ''}
+      <div>
+        <strong>${escapeHtml(card.name)}</strong>
+        <div style="font-size:12px;color:#888;">${escapeHtml(card.set||'')}</div>
+        <div style="font-size:11px;color:#aaa;margin-top:4px;">From page ${fromPage+1}, slot ${fromSlot+1}</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+      <button class="secondary" id="movePrevPage" ${viewPage===0?'disabled':''} style="padding:4px 10px;">◀</button>
+      <span style="font-size:13px;font-weight:600;">Page ${viewPage+1} of ${totalPages}</span>
+      <button class="secondary" id="moveNextPage" ${viewPage===totalPages-1?'disabled':''} style="padding:4px 10px;">▶</button>
+    </div>
+    <div class="slotPickerGrid">${cellsHtml}</div>
+    <p style="font-size:11px;color:#aaa;text-align:center;margin:6px 0 0;">
+      Tap <strong style="color:#4a8;">+</strong> to move · Tap a card to swap
+    </p>
+    <div class="closeRow" style="margin-top:10px;">
+      <button class="secondary" id="moveCancelBtn">Cancel</button>
+    </div>
+  `);
+
+  document.getElementById('moveCancelBtn').addEventListener('click', hideOverlay);
+
+  // Page navigation — re-render the panel showing a different page's grid
+  document.getElementById('movePrevPage').addEventListener('click', () => openMovePanel(fromPage, fromSlot, viewPage - 1));
+  document.getElementById('moveNextPage').addEventListener('click', () => openMovePanel(fromPage, fromSlot, viewPage + 1));
+
+  // Wire move and swap clicks
+  document.querySelectorAll('[data-action]').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const toPage = parseInt(cell.dataset.topage);
+      const toSlot = parseInt(cell.dataset.toslot);
+      const action = cell.dataset.action;
+
+      if (action === 'move'){
+        // Move: place card in empty slot, clear origin
+        binderState.pages[toPage][toSlot] = binderState.pages[fromPage][fromSlot];
+        binderState.pages[fromPage][fromSlot] = null;
+        persist();
+        renderPage(currentSpread, null);
+        updateSummary();
+        hideOverlay();
+        toast(`${card.name} moved to page ${toPage+1}, slot ${toSlot+1}.`);
+      } else {
+        // Swap: exchange the two cards
+        const temp = binderState.pages[toPage][toSlot];
+        binderState.pages[toPage][toSlot] = binderState.pages[fromPage][fromSlot];
+        binderState.pages[fromPage][fromSlot] = temp;
+        persist();
+        renderPage(currentSpread, null);
+        updateSummary();
+        hideOverlay();
+        toast(`Swapped ${card.name} ↔ ${temp.name}.`);
+      }
+    });
+  });
 }
 
 /* ---------------------------------------------------------------------
