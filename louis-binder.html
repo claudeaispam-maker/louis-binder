@@ -1692,44 +1692,193 @@ function openSlotOptions(pageIndex, slotIndex){
   }
 }
 
+/* openImageCropper — canvas-based pan/zoom editor for a photo before saving to a slot.
+   Draws the image on a card-shaped canvas; user drags to pan and pinches/scrolls to zoom.
+   Image always fills the canvas (no black bars). Calls onConfirm(dataUrl) or onCancel(). */
+function openImageCropper(imageDataUrl, onConfirm, onCancel){
+  const CW = 260, CH = 364; // card aspect ratio 5:7 at display resolution
+
+  showOverlay(`
+    <h2 style="margin-bottom:4px;">Crop & Center</h2>
+    <p style="font-size:12px;color:#888;margin:0 0 8px 0;">Drag to move · Pinch or slide to zoom</p>
+    <canvas id="cropCanvas" width="${CW}" height="${CH}"
+      style="display:block;border-radius:10px;border:2px solid #ddd;touch-action:none;
+             cursor:grab;background:#222;max-width:100%;margin:0 auto;box-shadow:0 4px 16px rgba(0,0,0,0.25);">
+    </canvas>
+    <div style="display:flex;align-items:center;gap:8px;margin-top:10px;">
+      <span style="font-size:13px;">−</span>
+      <input type="range" id="zoomSlider" min="100" max="400" step="1" value="100"
+        style="flex:1;height:4px;accent-color:#e83;">
+      <span style="font-size:13px;">+</span>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button class="secondary" id="cropResetBtn" style="flex:1;">↺ Fit</button>
+      <button class="primary" id="cropConfirmBtn" style="flex:2;">✓ Use This</button>
+    </div>
+    <div class="closeRow" style="margin-top:8px;">
+      <button class="secondary" id="cropCancelBtn">← Cancel</button>
+    </div>
+  `);
+
+  const canvas = document.getElementById('cropCanvas');
+  const ctx    = canvas.getContext('2d');
+  const img    = new Image();
+  let scale = 1, minScale = 1;
+  let ox = 0, oy = 0; // image top-left offset on the canvas
+
+  function clamp(){
+    // Prevent exposing canvas background — image must always cover the full canvas
+    ox = Math.min(0, Math.max(CW - img.width  * scale, ox));
+    oy = Math.min(0, Math.max(CH - img.height * scale, oy));
+  }
+
+  function draw(){
+    ctx.clearRect(0, 0, CW, CH);
+    ctx.drawImage(img, ox, oy, img.width * scale, img.height * scale);
+  }
+
+  function applyScale(newScale, pivotX, pivotY){
+    newScale = Math.max(minScale, Math.min(minScale * 4, newScale));
+    const ratio = newScale / scale;
+    ox = pivotX + (ox - pivotX) * ratio;
+    oy = pivotY + (oy - pivotY) * ratio;
+    scale = newScale;
+    clamp();
+    draw();
+    document.getElementById('zoomSlider').value = Math.round(scale / minScale * 100);
+  }
+
+  function resetFit(){
+    minScale = Math.max(CW / img.width, CH / img.height);
+    scale    = minScale;
+    ox = (CW - img.width  * scale) / 2;
+    oy = (CH - img.height * scale) / 2;
+    clamp();
+    draw();
+    const sl = document.getElementById('zoomSlider');
+    if (sl) sl.value = 100;
+  }
+
+  img.onload = resetFit;
+  img.src    = imageDataUrl;
+
+  // Zoom slider
+  document.getElementById('zoomSlider').addEventListener('input', (e) => {
+    applyScale(minScale * (parseInt(e.target.value) / 100), CW / 2, CH / 2);
+  });
+
+  document.getElementById('cropResetBtn').addEventListener('click', resetFit);
+
+  // --- Mouse pan ---
+  let dragging = false, lastMX = 0, lastMY = 0;
+  canvas.addEventListener('mousedown', (e) => {
+    dragging = true; lastMX = e.clientX; lastMY = e.clientY;
+    canvas.style.cursor = 'grabbing'; e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    ox += e.clientX - lastMX; oy += e.clientY - lastMY;
+    lastMX = e.clientX; lastMY = e.clientY;
+    clamp(); draw();
+  });
+  window.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+
+  // --- Scroll wheel zoom ---
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    applyScale(scale * (e.deltaY < 0 ? 1.1 : 0.9),
+               e.clientX - rect.left, e.clientY - rect.top);
+  }, { passive: false });
+
+  // --- Touch pan + pinch ---
+  let lastTouches = [];
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    lastTouches = Array.from(e.touches);
+  }, { passive: false });
+
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const touches = Array.from(e.touches);
+    const rect    = canvas.getBoundingClientRect();
+
+    if (touches.length === 1 && lastTouches.length >= 1){
+      ox += touches[0].clientX - lastTouches[0].clientX;
+      oy += touches[0].clientY - lastTouches[0].clientY;
+      clamp(); draw();
+    } else if (touches.length === 2 && lastTouches.length >= 2){
+      const prevD = Math.hypot(lastTouches[0].clientX - lastTouches[1].clientX,
+                               lastTouches[0].clientY - lastTouches[1].clientY);
+      const newD  = Math.hypot(touches[0].clientX - touches[1].clientX,
+                               touches[0].clientY - touches[1].clientY);
+      const midX  = (touches[0].clientX + touches[1].clientX) / 2 - rect.left;
+      const midY  = (touches[0].clientY + touches[1].clientY) / 2 - rect.top;
+      const pmidX = (lastTouches[0].clientX + lastTouches[1].clientX) / 2 - rect.left;
+      const pmidY = (lastTouches[0].clientY + lastTouches[1].clientY) / 2 - rect.top;
+      // Pan via midpoint movement first, then scale around new midpoint
+      ox += midX - pmidX; oy += midY - pmidY;
+      applyScale(scale * (newD / prevD), midX, midY);
+    }
+    lastTouches = touches;
+  }, { passive: false });
+
+  document.getElementById('cropConfirmBtn').addEventListener('click', () => {
+    onConfirm(canvas.toDataURL('image/jpeg', 0.92));
+  });
+  document.getElementById('cropCancelBtn').addEventListener('click', onCancel);
+}
+
 /* openCustomCardPanel — lets the user enter a card name, set, and upload their own image.
-   No API calls at all — useful for custom, fan-made, or unlisted cards. */
-function openCustomCardPanel(pageIndex, slotIndex){
+   No API calls at all — useful for custom, fan-made, or unlisted cards.
+   prefill = {name, set, image} allows re-opening after the crop editor with state intact. */
+function openCustomCardPanel(pageIndex, slotIndex, prefill = {}){
+  const preName  = prefill.name  || '';
+  const preSet   = prefill.set   || '';
+  const preImage = prefill.image || null;
+
   showOverlay(`
     <h2 style="margin-bottom:8px;">✏️ Custom Card — Slot ${slotIndex + 1}</h2>
     <label style="font-size:12px;color:#555;">Card Name <span style="color:#c55;">*</span></label>
-    <input type="text" id="customName" placeholder="e.g. Shadow Charizard" autocorrect="off" style="margin-bottom:8px;">
+    <input type="text" id="customName" placeholder="e.g. Shadow Charizard" autocorrect="off"
+           value="${preName.replace(/"/g,'&quot;')}" style="margin-bottom:8px;">
     <label style="font-size:12px;color:#555;">Set / Series (optional)</label>
-    <input type="text" id="customSet" placeholder="e.g. Fan Set, Custom 2024" autocorrect="off" style="margin-bottom:8px;">
+    <input type="text" id="customSet" placeholder="e.g. Fan Set, Custom 2024" autocorrect="off"
+           value="${preSet.replace(/"/g,'&quot;')}" style="margin-bottom:8px;">
     <label style="font-size:12px;color:#555;">Card Image (optional)</label>
-    <button class="secondary" id="customImgBtn" style="width:100%;margin-bottom:4px;">📁 Choose Image</button>
-    <div id="customImgPreview" style="text-align:center;margin-bottom:8px;"></div>
+    <button class="secondary" id="customImgBtn" style="width:100%;margin-bottom:4px;">
+      ${preImage ? '📁 Change Image' : '📁 Choose & Crop Image'}
+    </button>
+    <div id="customImgPreview" style="text-align:center;margin-bottom:8px;">
+      ${preImage ? `<img src="${preImage}" style="max-height:120px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">` : ''}
+    </div>
     <button class="primary" id="customSaveBtn" style="width:100%;margin-top:4px;">Save to Slot</button>
     <div class="closeRow" style="margin-top:8px;">
       <button class="secondary" id="customCancelBtn">← Back</button>
     </div>
   `);
 
-  let customImageDataUrl = null; // holds the uploaded image as a data URL
+  let customImageDataUrl = preImage;
 
   document.getElementById('customCancelBtn').addEventListener('click', () => openSlotOptions(pageIndex, slotIndex));
 
-  // Image picker — reuse the scan file input but intercept it for custom image mode
   document.getElementById('customImgBtn').addEventListener('click', () => {
     const inp = document.createElement('input');
-    inp.type = 'file';
-    inp.accept = 'image/*';
-    inp.style.display = 'none';
+    inp.type = 'file'; inp.accept = 'image/*'; inp.style.display = 'none';
     document.body.appendChild(inp);
     inp.addEventListener('change', async () => {
       const file = inp.files[0];
-      if (!file){ document.body.removeChild(inp); return; }
-      customImageDataUrl = await fileToDataUrl(file);
-      // Show a small preview of the chosen image
-      document.getElementById('customImgPreview').innerHTML =
-        `<img src="${customImageDataUrl}" style="max-height:120px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.2);">`;
-      document.getElementById('customImgBtn').textContent = '📁 Change Image';
       document.body.removeChild(inp);
+      if (!file) return;
+      const rawUrl = await fileToDataUrl(file);
+      // Snapshot text fields before the overlay is replaced by the cropper
+      const snapName = document.getElementById('customName').value;
+      const snapSet  = document.getElementById('customSet').value;
+      openImageCropper(
+        rawUrl,
+        (croppedUrl) => openCustomCardPanel(pageIndex, slotIndex, { name: snapName, set: snapSet, image: croppedUrl }),
+        ()           => openCustomCardPanel(pageIndex, slotIndex, { name: snapName, set: snapSet, image: customImageDataUrl })
+      );
     });
     inp.click();
   });
@@ -1743,7 +1892,7 @@ function openCustomCardPanel(pageIndex, slotIndex){
     binderState.pages[pageIndex][slotIndex] = {
       cardId: '',
       name,
-      image: customImageDataUrl || '',  // use uploaded image or leave blank
+      image: customImageDataUrl || '',
       set,
       owned: true,
       quantity: 1,
