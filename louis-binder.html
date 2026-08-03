@@ -1394,8 +1394,8 @@ function buildPageFaceEl(pageIndex){
   const scanBtn = document.createElement('button');
   scanBtn.className = 'scanPageBtn';
   scanBtn.textContent = '📷 Scan Card';
-  // single-card mode: scan one card, then pick which slot to place it in
-  scanBtn.addEventListener('click', (e) => { e.stopPropagation(); openSingleCardScan(pageIndex, 0); });
+  // page-level scan: no slot pre-selected — show slot picker after identification
+  scanBtn.addEventListener('click', (e) => { e.stopPropagation(); openSingleCardScan(pageIndex, -1); });
   header.appendChild(labelSpan);
   header.appendChild(scanBtn);
   const grid = document.createElement('div');
@@ -1629,7 +1629,7 @@ function onPocketClick(pageIndex, slotIndex){
   if (slot){
     openDetailPanel(pageIndex, slotIndex);
   } else {
-    openSearchPanel(pageIndex, slotIndex);
+    openSlotOptions(pageIndex, slotIndex); // empty slot → show add-card options
   }
 }
 
@@ -1659,13 +1659,43 @@ function toast(msg){
 /* ---------------------------------------------------------------------
    SEARCH PANEL (Pokémon TCG API)
 --------------------------------------------------------------------- */
+/* openSlotOptions — shown when tapping an empty slot.
+   Two clear paths: scan/upload a photo, or search by name.
+   Scan goes directly into this slot — no slot picker needed. */
+function openSlotOptions(pageIndex, slotIndex){
+  const hasScanKey = !!binderState.anthropicKey;
+  const slotLabel = slotIndex + 1;
+  showOverlay(`
+    <h2 style="margin-bottom:4px;">Slot ${slotLabel} — Add a card</h2>
+    <p style="font-size:12px;color:#888;margin:0 0 14px;">Page ${pageIndex + 1} · slot ${slotLabel} of 9</p>
+    ${hasScanKey ? `
+    <button class="primary" id="scanSlotBtn" style="width:100%;padding:14px;font-size:15px;margin-bottom:10px;">
+      📷 Upload or Scan Card
+    </button>` : ''}
+    <button class="secondary" id="searchSlotBtn" style="width:100%;padding:12px;font-size:14px;">
+      🔍 Search by card name
+    </button>
+    <div class="closeRow" style="margin-top:12px;">
+      <button class="secondary" id="slotOptsCancelBtn">Cancel</button>
+    </div>
+  `);
+  document.getElementById('slotOptsCancelBtn').addEventListener('click', hideOverlay);
+  document.getElementById('searchSlotBtn').addEventListener('click', () => openSearchPanel(pageIndex, slotIndex));
+  if (hasScanKey){
+    document.getElementById('scanSlotBtn').addEventListener('click', () => {
+      hideOverlay();
+      // Scan directly into this slot — no slot picker
+      openSingleCardScan(pageIndex, slotIndex);
+    });
+  }
+}
+
+/* openSearchPanel — search the TCG API by card name and place result in a slot.
+   Called from slot options or as a fallback when scan can't identify a card. */
 function openSearchPanel(pageIndex, slotIndex){
   pendingPickSlotRef = { pageIndex, slotIndex };
-  // Show scan button only if the user has entered their API key
-  const hasScanKey = !!binderState.anthropicKey;
   showOverlay(`
     <h2>Find a card</h2>
-    ${hasScanKey ? `<button class="secondary" id="scanCardBtn" style="width:100%;margin-bottom:8px;">📷 Scan Card (take or upload a photo)</button>` : ''}
     <input type="text" id="searchInput" placeholder="Card name, e.g. Charizard" autofocus>
     <button class="primary" id="searchGoBtn">Search</button>
     <button class="secondary" id="searchCancelBtn">Cancel</button>
@@ -1676,13 +1706,6 @@ function openSearchPanel(pageIndex, slotIndex){
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
   document.getElementById('searchGoBtn').addEventListener('click', doSearch);
   document.getElementById('searchCancelBtn').addEventListener('click', hideOverlay);
-  // Wire scan button — opens camera/gallery for a single card photo
-  if (hasScanKey){
-    document.getElementById('scanCardBtn').addEventListener('click', () => {
-      hideOverlay();
-      openSingleCardScan(pageIndex, slotIndex);
-    });
-  }
 }
 
 async function doSearch(){
@@ -2246,8 +2269,27 @@ async function processSingleCardFile(file, pageIndex, slotIndex){
       return;
     }
 
-    // Show slot picker instead of placing immediately — user picks which slot to use
-    openSlotPicker(pageIndex, card);
+    // If a specific slot was pre-selected (tapped directly), place the card there immediately.
+    // If slotIndex is -1 (triggered from page-level button), show the slot picker instead.
+    if (slotIndex >= 0){
+      binderState.pages[pageIndex][slotIndex] = {
+        cardId: card.id,
+        name: card.name,
+        image: card.images.large || card.images.small,
+        set: card.set?.name || '',
+        owned: true,
+        quantity: 1,
+        condition: 'Near Mint',
+        notes: ''
+      };
+      persist();
+      renderPage(currentSpread, null);
+      updateSummary();
+      hideOverlay();
+      toast(`${card.name} added to slot ${slotIndex + 1}.`);
+    } else {
+      openSlotPicker(pageIndex, card);
+    }
 
   }catch(err){
     hideLoading();
