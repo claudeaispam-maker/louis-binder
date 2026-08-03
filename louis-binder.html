@@ -1630,8 +1630,11 @@ function toast(msg){
 --------------------------------------------------------------------- */
 function openSearchPanel(pageIndex, slotIndex){
   pendingPickSlotRef = { pageIndex, slotIndex };
+  // Show scan button only if the user has entered their API key
+  const hasScanKey = !!binderState.anthropicKey;
   showOverlay(`
     <h2>Find a card</h2>
+    ${hasScanKey ? `<button class="secondary" id="scanCardBtn" style="width:100%;margin-bottom:8px;">📷 Scan Card (take or upload a photo)</button>` : ''}
     <input type="text" id="searchInput" placeholder="Card name, e.g. Charizard" autofocus>
     <button class="primary" id="searchGoBtn">Search</button>
     <button class="secondary" id="searchCancelBtn">Cancel</button>
@@ -1642,6 +1645,13 @@ function openSearchPanel(pageIndex, slotIndex){
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
   document.getElementById('searchGoBtn').addEventListener('click', doSearch);
   document.getElementById('searchCancelBtn').addEventListener('click', hideOverlay);
+  // Wire scan button — opens camera/gallery for a single card photo
+  if (hasScanKey){
+    document.getElementById('scanCardBtn').addEventListener('click', () => {
+      hideOverlay();
+      openSingleCardScan(pageIndex, slotIndex);
+    });
+  }
 }
 
 async function doSearch(){
@@ -1934,6 +1944,8 @@ document.getElementById('pageMoveR').addEventListener('click', () => movePage('r
 let scanReviewData = [];
 let scanPageIndex = -1;
 let correctionsCache = {};
+// singleScanRef: set when scanning one card into one slot; null for full-page scan mode
+let singleScanRef = null;
 
 // ---- file input wiring ----
 const scanFileInput = document.getElementById('scanFileInput');
@@ -1943,13 +1955,34 @@ function openScanFlow(pageIndex){
     return;
   }
   scanPageIndex = pageIndex;
+  singleScanRef = null; // full-page mode
   scanFileInput.value = '';
   scanFileInput.click();
 }
+
+// openSingleCardScan — tap a slot → take/upload one card photo → fills that slot only
+function openSingleCardScan(pageIndex, slotIndex){
+  if (!binderState.anthropicKey){
+    toast('Add your Claude API key in ⚙ Settings to use card scanning.');
+    return;
+  }
+  singleScanRef = { pageIndex, slotIndex }; // remember which slot to fill
+  scanFileInput.value = '';
+  scanFileInput.click();
+}
+
 scanFileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  await processScanFile(file, scanPageIndex);
+  if (singleScanRef){
+    // Single-card mode: identify one card and drop it straight into one slot
+    const { pageIndex, slotIndex } = singleScanRef;
+    singleScanRef = null;
+    await processSingleCardFile(file, pageIndex, slotIndex);
+  } else {
+    // Full-page mode: crop 3×3 grid and identify all 9 slots at once
+    await processScanFile(file, scanPageIndex);
+  }
 });
 
 // ---- image helpers ----
@@ -2113,6 +2146,96 @@ Use confidence "high", "medium", or "low" based on how clearly you can read the 
     if (idx >= 0 && idx < 9) result[idx] = { name: item.name || 'unknown', set: item.set || '', number: item.number || '', confidence: item.confidence || 'low' };
   });
   return result;
+}
+
+// ---- single-card Claude vision call ----
+// Sends one card photo; returns {name, set, number, confidence} for that card only.
+async function identifySingleCard(imageDataUrl, apiKey){
+  const base64 = imageDataUrl.split(',')[1];
+  const mediaType = imageDataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 256,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: `This is a photo of a single Pokémon TCG card. Identify it.
+Respond ONLY with valid JSON — no other text:
+{"name":"Charizard","set":"Base Set","number":"4/102","confidence":"high"}
+If unreadable use: {"name":"unknown","set":"","number":"","confidence":"low"}` }
+        ]
+      }]
+    })
+  });
+  if (!res.ok){
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || `Claude API error ${res.status}`);
+  }
+  const data = await res.json();
+  const text = data.content?.[0]?.text || '';
+  const match = text.match(/\{[\s\S]*?\}/);
+  if (!match) return { name: 'unknown', set: '', number: '', confidence: 'low' };
+  try { return JSON.parse(match[0]); } catch { return { name: 'unknown', set: '', number: '', confidence: 'low' }; }
+}
+
+// ---- single-card scan processor ----
+// Takes a photo of one card, identifies it, and writes it to the target slot immediately.
+async function processSingleCardFile(file, pageIndex, slotIndex){
+  showLoading('Reading image…');
+  try{
+    const dataUrl = await fileToDataUrl(file);
+    const resized  = await resizeImage(dataUrl, 800);
+
+    showLoading('Identifying card…');
+    const guess = await identifySingleCard(resized, binderState.anthropicKey);
+
+    if (!guess || guess.name === 'unknown'){
+      hideLoading();
+      toast('Could not identify — try searching manually.');
+      openSearchPanel(pageIndex, slotIndex);
+      return;
+    }
+
+    showLoading('Matching card data…');
+    const card = await searchTCGForCard(guess.name, guess.set);
+    hideLoading();
+
+    if (!card){
+      toast(`Saw "${guess.name}" but no API match — search manually.`);
+      openSearchPanel(pageIndex, slotIndex);
+      return;
+    }
+
+    // Write identified card directly into the slot
+    binderState.pages[pageIndex][slotIndex] = {
+      cardId: card.id,
+      name: card.name,
+      image: card.images.large || card.images.small,
+      set: card.set?.name || '',
+      owned: true,
+      quantity: 1,
+      condition: 'Near Mint',
+      notes: ''
+    };
+    persist();
+    renderPage(currentSpread, null);
+    updateSummary();
+    hideOverlay();
+    toast(`Added ${card.name} to slot ${slotIndex + 1}.`);
+  }catch(err){
+    hideLoading();
+    console.error(err);
+    toast('Scan failed: ' + (err.message || 'unknown error'));
+  }
 }
 
 // ---- TCG API lookup for a guessed name+set ----
