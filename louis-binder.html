@@ -737,8 +737,8 @@
 
 <div id="toast"></div>
 
-<!-- hidden file input for scan — accept camera or gallery -->
-<input type="file" id="scanFileInput" accept="image/*" capture="environment" style="display:none">
+<!-- hidden file input for scan — no capture attr so iOS shows "Take Photo / Choose from Library" -->
+<input type="file" id="scanFileInput" accept="image/*" style="display:none">
 
 <script>
 /* =====================================================================
