@@ -641,6 +641,36 @@
   .scanNote{ font-size:11px; color:#aaa; margin:5px 0 0; text-align:center; }
   .scanFixHeader{ display:flex; align-items:center; gap:12px; margin-bottom:12px; }
   .scanFixHeader img{ width:64px; border-radius:6px; border:1px solid #ddd; flex-shrink:0; }
+
+  /* Slot picker — shown after single-card scan to choose where to place the card */
+  .slotPickerCard{
+    display:flex; align-items:center; gap:12px;
+    background:#f7f4ee; border-radius:10px; padding:10px; margin-bottom:12px;
+  }
+  .slotPickerCard img{ width:64px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.2); flex-shrink:0; }
+  .slotPickerGrid{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:4px;
+  }
+  /* each slot in the picker — empty = selectable target, filled = shows existing card */
+  .slotPickerCell{
+    position:relative; border-radius:8px; border:2px solid #ddd;
+    aspect-ratio:2/3; overflow:hidden; cursor:pointer; background:#f0ece4;
+    display:flex; align-items:center; justify-content:center; flex-direction:column;
+    font-size:11px; color:#999; transition:border-color .15s, transform .12s;
+  }
+  .slotPickerCell.empty{ border-color:#b0c4a0; background:#eef5ea; }
+  .slotPickerCell.empty:hover{ border-color:var(--owned); transform:scale(1.05); background:#dff0d8; }
+  .slotPickerCell.filled{ border-color:#ccc; cursor:not-allowed; opacity:.7; }
+  .slotPickerCell img{ width:100%; height:100%; object-fit:cover; }
+  /* slot number badge in top-left corner */
+  .slotPickerNum{
+    position:absolute; top:3px; left:4px;
+    background:rgba(0,0,0,0.55); color:#fff;
+    font-size:10px; font-weight:700; border-radius:4px; padding:1px 4px; line-height:1.4;
+    pointer-events:none;
+  }
+  /* highlight ring when hovering an empty slot */
+  .slotPickerCell.empty:hover .slotPickerNum{ background:var(--owned); }
 </style>
 </head>
 <body>
@@ -2188,7 +2218,7 @@ If unreadable use: {"name":"unknown","set":"","number":"","confidence":"low"}` }
 }
 
 // ---- single-card scan processor ----
-// Takes a photo of one card, identifies it, and writes it to the target slot immediately.
+// Identifies one card photo then opens the slot picker so the user chooses where to place it.
 async function processSingleCardFile(file, pageIndex, slotIndex){
   showLoading('Reading image…');
   try{
@@ -2215,27 +2245,89 @@ async function processSingleCardFile(file, pageIndex, slotIndex){
       return;
     }
 
-    // Write identified card directly into the slot
-    binderState.pages[pageIndex][slotIndex] = {
-      cardId: card.id,
-      name: card.name,
-      image: card.images.large || card.images.small,
-      set: card.set?.name || '',
-      owned: true,
-      quantity: 1,
-      condition: 'Near Mint',
-      notes: ''
-    };
-    persist();
-    renderPage(currentSpread, null);
-    updateSummary();
-    hideOverlay();
-    toast(`Added ${card.name} to slot ${slotIndex + 1}.`);
+    // Show slot picker instead of placing immediately — user picks which slot to use
+    openSlotPicker(pageIndex, card);
+
   }catch(err){
     hideLoading();
     console.error(err);
     toast('Scan failed: ' + (err.message || 'unknown error'));
   }
+}
+
+// ---- slot picker ----
+// Shows the current page as a visual 3×3 grid. User taps an empty slot to place the card.
+// Slots are numbered 1–9, left-to-right, top-to-bottom (matching binder sleeve layout).
+function openSlotPicker(pageIndex, card){
+  const page = binderState.pages[pageIndex]; // array of 9 slots (null = empty)
+  const cardImg = card.images?.large || card.images?.small || '';
+  const cardName = card.name || '';
+  const cardSet  = card.set?.name || '';
+
+  // Build the 3×3 grid HTML — each cell shows its number and any existing card
+  let cellsHtml = '';
+  for (let i = 0; i < 9; i++){
+    const existing = page[i];
+    const label = i + 1; // slot label 1–9
+    if (existing){
+      // Slot is filled — show existing card, not clickable
+      cellsHtml += `
+        <div class="slotPickerCell filled" title="Slot ${label}: ${escapeHtml(existing.name)} (filled)">
+          <span class="slotPickerNum">${label}</span>
+          ${existing.image ? `<img src="${existing.image}" alt="${escapeHtml(existing.name)}">` : '<span style="font-size:10px;color:#aaa">filled</span>'}
+        </div>`;
+    } else {
+      // Slot is empty — tappable target
+      cellsHtml += `
+        <div class="slotPickerCell empty" data-slot="${i}" title="Place in slot ${label}">
+          <span class="slotPickerNum">${label}</span>
+          <span style="font-size:20px;margin-top:4px;">+</span>
+          <span style="font-size:10px;margin-top:2px;">slot ${label}</span>
+        </div>`;
+    }
+  }
+
+  showOverlay(`
+    <h2 style="margin-bottom:8px;">Choose a slot — Page ${pageIndex + 1}</h2>
+    <div class="slotPickerCard">
+      ${cardImg ? `<img src="${cardImg}" alt="${escapeHtml(cardName)}">` : ''}
+      <div>
+        <strong>${escapeHtml(cardName)}</strong>
+        <div style="font-size:12px;color:#888;margin-top:2px;">${escapeHtml(cardSet)}</div>
+        <div style="font-size:11px;color:#aaa;margin-top:4px;">Tap an empty slot to place this card</div>
+      </div>
+    </div>
+    <div class="slotPickerGrid">${cellsHtml}</div>
+    <div class="closeRow" style="margin-top:12px;">
+      <button class="secondary" id="slotPickerCancelBtn">Cancel</button>
+    </div>
+  `);
+
+  document.getElementById('slotPickerCancelBtn').addEventListener('click', hideOverlay);
+
+  // Wire each empty cell — clicking places the card in that slot
+  document.querySelectorAll('.slotPickerCell.empty').forEach(cell => {
+    cell.addEventListener('click', () => {
+      const slotIndex = parseInt(cell.dataset.slot);
+
+      // Write card data into the chosen slot
+      binderState.pages[pageIndex][slotIndex] = {
+        cardId: card.id,
+        name: card.name,
+        image: card.images.large || card.images.small,
+        set: card.set?.name || '',
+        owned: true,
+        quantity: 1,
+        condition: 'Near Mint',
+        notes: ''
+      };
+      persist();
+      renderPage(currentSpread, null);
+      updateSummary();
+      hideOverlay();
+      toast(`${card.name} → slot ${slotIndex + 1}.`);
+    });
+  });
 }
 
 // ---- TCG API lookup for a guessed name+set ----
