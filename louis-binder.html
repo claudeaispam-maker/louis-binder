@@ -1393,8 +1393,9 @@ function buildPageFaceEl(pageIndex){
   labelSpan.textContent = `— Page ${pageIndex+1} —`;
   const scanBtn = document.createElement('button');
   scanBtn.className = 'scanPageBtn';
-  scanBtn.textContent = '📷 Scan Page';
-  scanBtn.addEventListener('click', (e) => { e.stopPropagation(); openScanFlow(pageIndex); });
+  scanBtn.textContent = '📷 Scan Card';
+  // single-card mode: scan one card, then pick which slot to place it in
+  scanBtn.addEventListener('click', (e) => { e.stopPropagation(); openSingleCardScan(pageIndex, 0); });
   header.appendChild(labelSpan);
   header.appendChild(scanBtn);
   const grid = document.createElement('div');
@@ -2626,7 +2627,7 @@ document.getElementById('settingsBtn').addEventListener('click', () => {
       Get a free key at <span style="color:#555">pokemontcg.io</span>. Works without one, just rate-limited.
     </p>
     <hr style="border:none;border-top:1px solid #eee;margin:12px 0;">
-    <label style="font-size:12px;color:#555;">Claude (Anthropic) API key — <strong>required for 📷 Scan Page</strong></label>
+    <label style="font-size:12px;color:#555;">Claude (Anthropic) API key — <strong>required for 📷 Scan Card</strong></label>
     <input type="text" id="anthropicKeyInput" placeholder="sk-ant-..." value="${escapeHtml(binderState.anthropicKey || '')}">
     <p style="font-size:12px;color:#888;margin-top:4px;">
       Get a key at <span style="color:#555">console.anthropic.com</span>. Used to identify cards from your photos (~$0.01–0.05 per page scan). Stored only in your binder data.
