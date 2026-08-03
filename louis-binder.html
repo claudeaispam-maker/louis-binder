@@ -2203,7 +2203,8 @@ Use confidence "high", "medium", or "low" based on how clearly you can read the 
 }
 
 // ---- single-card Claude vision call ----
-// Sends one card photo; returns {name, set, number, confidence} for that card only.
+// Reads the card name, set, AND card number (bottom-right corner e.g. "61/132").
+// The number is critical for pinpointing the exact printing in the TCG API.
 async function identifySingleCard(imageDataUrl, apiKey){
   const base64 = imageDataUrl.split(',')[1];
   const mediaType = imageDataUrl.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
@@ -2222,10 +2223,15 @@ async function identifySingleCard(imageDataUrl, apiKey){
         role: 'user',
         content: [
           { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-          { type: 'text', text: `This is a photo of a single Pokémon TCG card. Identify it.
+          { type: 'text', text: `This is a photo of a Pokémon TCG card. Read it carefully.
+
+IMPORTANT: Read the card number printed in the bottom-right corner (e.g. "61/132", "4/102", "SWSH001").
+Also read the FULL card name including any trainer prefix (e.g. "Blaine's Charmander", not just "Charmander").
+
 Respond ONLY with valid JSON — no other text:
-{"name":"Charizard","set":"Base Set","number":"4/102","confidence":"high"}
-If unreadable use: {"name":"unknown","set":"","number":"","confidence":"low"}` }
+{"name":"Blaine's Charmander","set":"Gym Challenge","number":"61/132","confidence":"high"}
+
+If unreadable: {"name":"unknown","set":"","number":"","confidence":"low"}` }
         ]
       }]
     })
@@ -2260,7 +2266,7 @@ async function processSingleCardFile(file, pageIndex, slotIndex){
     }
 
     showLoading('Matching card data…');
-    const card = await searchTCGForCard(guess.name, guess.set);
+    const card = await searchTCGForCard(guess.name, guess.set, guess.number);
     hideLoading();
 
     if (!card){
@@ -2374,15 +2380,44 @@ function openSlotPicker(pageIndex, card){
   });
 }
 
-// ---- TCG API lookup for a guessed name+set ----
-async function searchTCGForCard(name, set){
+// ---- TCG API lookup for a guessed name + number ----
+// Strategy: try exact name + card number first (most precise), then fall back to name + set.
+// The card number (e.g. "61" from "61/132") uniquely identifies a printing within a set.
+async function searchTCGForCard(name, set, number){
   try{
     const headers = {};
     if (binderState.apiKey) headers['X-Api-Key'] = binderState.apiKey;
-    const url = `https://api.pokemontcg.io/v2/cards?q=name:${encodeURIComponent(name)}*&pageSize=6`;
-    const res = await fetch(url, { headers });
-    const data = await res.json();
-    const cards = data.data || [];
+
+    // Extract just the number before the slash — "61/132" → "61", "SWSH001" stays as-is
+    const numOnly = number ? number.toString().split('/')[0].trim() : '';
+
+    // --- Pass 1: exact name + card number (pinpoints the specific printing) ---
+    if (numOnly){
+      const q1 = `name:"${name}" number:${numOnly}`;
+      const r1 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q1)}&pageSize=4`, { headers });
+      const d1 = await r1.json();
+      if (d1.data?.length) return d1.data[0];
+    }
+
+    // --- Pass 2: partial name + card number (handles apostrophes/special chars in API) ---
+    if (numOnly){
+      // Use first significant word of name to avoid quote-escaping issues
+      const firstName = name.split(' ').pop(); // e.g. "Charmander" from "Blaine's Charmander"
+      const q2 = `name:${encodeURIComponent(firstName)}* number:${numOnly}`;
+      const r2 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q2)}&pageSize=6`, { headers });
+      const d2 = await r2.json();
+      if (d2.data?.length){
+        // Prefer the card whose full name matches most closely
+        const exact = d2.data.find(c => c.name.toLowerCase() === name.toLowerCase());
+        return exact || d2.data[0];
+      }
+    }
+
+    // --- Pass 3: name + set (fallback when number isn't readable) ---
+    const q3 = `name:${encodeURIComponent(name)}*`;
+    const r3 = await fetch(`https://api.pokemontcg.io/v2/cards?q=${encodeURIComponent(q3)}&pageSize=12`, { headers });
+    const d3 = await r3.json();
+    const cards = d3.data || [];
     if (!cards.length) return null;
     if (set){
       const hit = cards.find(c => c.set?.name?.toLowerCase().includes(set.toLowerCase().slice(0, 6)));
@@ -2427,7 +2462,7 @@ async function processScanFile(file, pageIndex){
         return { ...base, name: null, image: null, set: '', confidence: 'unknown' };
       }
 
-      const card = await searchTCGForCard(guess.name, guess.set);
+      const card = await searchTCGForCard(guess.name, guess.set, guess.number);
       return {
         ...base,
         cardId: card?.id || null,
