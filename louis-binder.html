@@ -2252,8 +2252,10 @@ async function fetchAndCachePrice(pageIndex, slotIndex){
 
     // Store the resolved market price and full variant breakdown on the slot
     const price = getMarketPrice(data.tcgplayer);
-    slot.price          = price;
-    slot.priceDetails   = data.tcgplayer?.prices || null;
+    if (price != null){
+      slot.price        = price;
+      slot.priceDetails = data.tcgplayer?.prices || null;
+    }
     slot.priceUpdatedAt = Date.now();
 
     persist();
